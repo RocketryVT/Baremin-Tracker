@@ -1,77 +1,171 @@
-#include <cstdint>
-#include <cstdio>
-#include <span>
+// Bareman Tracker — LR1121 LoRa GPS transmitter
+// FreeRTOS / RP2350
+//
+// Task layout:
+//   gps  (pri 3) – UART0 NMEA parse; overwrites g_gps_queue
+//   lora (pri 2) – reads g_gps_queue; transmits JSON via LR1121 at 915 MHz
+//   usb  (pri 1) – drains g_log_queue; sole caller of printf()
+//
+// All FreeRTOS objects are statically allocated.
+
+#include "shared.hpp"
+
+#include "Tasks/GPS/gps_task.hpp"
+#include "Tasks/LoRa/lora_task.hpp"
+#include "Tasks/USB/usb_task.hpp"
 
 #include "pico/stdlib.h"
-#include "hardware/gpio.h"
-#include "hardware/spi.h"
+#include <stdio.h>
 
-#include "FreeRTOS.h"
-#include "task.h"
+// ── Shared FreeRTOS handles ───────────────────────────────────────────────────
+QueueHandle_t g_gps_queue = nullptr;
+QueueHandle_t g_log_queue = nullptr;
 
-#include "hal/rp2040_hal.hpp"
-#include "SX127x/sx127x.hpp"
+static StaticQueue_t s_gps_queue_buf;
+static uint8_t       s_gps_queue_storage[ GPS_QUEUE_DEPTH * sizeof( GpsData ) ];
 
-namespace board {
-// TODO: update these pin assignments for your RP2350 board + RFM95W wiring.
-constexpr uint8_t kSpiSck  = 18;
-constexpr uint8_t kSpiMosi = 19;
-constexpr uint8_t kSpiMiso = 16;
-constexpr uint8_t kSpiCs   = 17;
+static StaticQueue_t s_log_queue_buf;
+static uint8_t       s_log_queue_storage[ LOG_QUEUE_DEPTH * sizeof( LogMessage ) ];
 
-constexpr uint8_t kLoraReset = 20;
-constexpr uint8_t kLoraDio0  = 21;
-}  // namespace board
+// ── FreeRTOS static-allocation callbacks ──────────────────────────────────────
+extern "C" {
 
-static void lora_task(void* param) {
-    auto* radio = static_cast<SX127x<Rp2040Hal>*>(param);
+void vApplicationGetIdleTaskMemory( StaticTask_t**  ppxIdleTaskTCBBuffer,
+                                     StackType_t**   ppxIdleTaskStackBuffer,
+                                     uint32_t*       pulIdleTaskStackSize )
+{
+    static StaticTask_t idle_tcb;
+    static StackType_t  idle_stack[ configMINIMAL_STACK_SIZE ];
 
-    const bool init_ok = radio->initialize();
-    printf("[lora] init: %s\n", init_ok ? "ok" : "fail");
+    *ppxIdleTaskTCBBuffer   = &idle_tcb;
+    *ppxIdleTaskStackBuffer =  idle_stack;
+    *pulIdleTaskStackSize   =  configMINIMAL_STACK_SIZE;
+}
 
-    const uint8_t payload[] = {'h', 'e', 'l', 'l', 'o'};
+// RP2350 has 2 cores — one passive idle task per additional core.
+void vApplicationGetPassiveIdleTaskMemory( StaticTask_t**  ppxIdleTaskTCBBuffer,
+                                            StackType_t**   ppxIdleTaskStackBuffer,
+                                            uint32_t*       pulIdleTaskStackSize,
+                                            BaseType_t      xPassiveIdleTaskIndex )
+{
+    static StaticTask_t passive_tcb  [ configNUMBER_OF_CORES - 1 ];
+    static StackType_t  passive_stack[ configNUMBER_OF_CORES - 1 ]
+                                     [ configMINIMAL_STACK_SIZE ];
 
-    for (;;) {
-        const bool sent = radio->send(std::span<const uint8_t>(payload, sizeof(payload)));
-        printf("[lora] send: %s\n", sent ? "ok" : "fail");
-        vTaskDelay(pdMS_TO_TICKS(1000));
+    *ppxIdleTaskTCBBuffer   = &passive_tcb  [ xPassiveIdleTaskIndex ];
+    *ppxIdleTaskStackBuffer =  passive_stack [ xPassiveIdleTaskIndex ];
+    *pulIdleTaskStackSize   =  configMINIMAL_STACK_SIZE;
+}
+
+void vApplicationGetTimerTaskMemory( StaticTask_t**  ppxTimerTaskTCBBuffer,
+                                      StackType_t**   ppxTimerTaskStackBuffer,
+                                      uint32_t*       pulTimerTaskStackSize )
+{
+    static StaticTask_t timer_tcb;
+    static StackType_t  timer_stack[ configTIMER_TASK_STACK_DEPTH ];
+
+    *ppxTimerTaskTCBBuffer   = &timer_tcb;
+    *ppxTimerTaskStackBuffer =  timer_stack;
+    *pulTimerTaskStackSize   =  configTIMER_TASK_STACK_DEPTH;
+}
+
+void vApplicationStackOverflowHook( TaskHandle_t xTask, char* pcTaskName )
+{
+    ( void ) xTask;
+    ( void ) pcTaskName;
+    // Halt on stack overflow — attach a debugger to see pcTaskName
+    for ( ;; ) {}
+}
+
+void vApplicationMallocFailedHook( void )
+{
+    for ( ;; ) {}
+}
+
+} // extern "C"
+
+// ── Heartbeat task ────────────────────────────────────────────────────────────
+static StaticTask_t s_hb_tcb;
+static StackType_t  s_hb_stack[ 256 ];
+
+static void heartbeat_task( void* )
+{
+    gpio_init( Pins::STATUS );
+    gpio_set_dir( Pins::STATUS, GPIO_OUT );
+    for ( ;; ) {
+        gpio_put( Pins::STATUS, 1 );
+        // printf( "[heartbeat] led on\n" );
+        vTaskDelay( pdMS_TO_TICKS( 500 ) );
+        gpio_put( Pins::STATUS, 0 );
+        // printf( "[heartbeat] led off\n" );
+        vTaskDelay( pdMS_TO_TICKS( 500 ) );
     }
 }
 
-int main() {
+// ── Test task ─────────────────────────────────────────────────────────────────
+static StaticTask_t s_test_tcb;
+static StackType_t  s_test_stack[ 1024 ];
+
+volatile uint32_t g_test_ticks = 0;   // incremented by test_task; no queue needed
+
+static void test_task( void* )
+{
+    for ( ;; ) {
+        g_test_ticks++;
+        struct LogMessage msg = { .buf = "Hello from test_task!\n" };
+        xQueueSend( g_log_queue, &msg, portMAX_DELAY );
+        vTaskDelay( pdMS_TO_TICKS( 1000 ) );
+    }
+}
+
+// ── Entry point ───────────────────────────────────────────────────────────────
+int main( void )
+{
     stdio_init_all();
-    sleep_ms(2000);
 
-    gpio_init(board::kLoraReset);
-    gpio_set_dir(board::kLoraReset, GPIO_OUT);
-    gpio_put(board::kLoraReset, 1);
+    // sleep_ms(2500);
 
-    gpio_init(board::kLoraDio0);
-    gpio_set_dir(board::kLoraDio0, GPIO_IN);
+    // printf( "=== Bareman Tracker — LR1121 GPS LoRa TX ===\n" );
+    // printf( "    Board  : RP2350 custom PCB\n" );
+    // printf( "    LoRa   : LR1121  SPI0  NSS=%u BUSY=%u RST=%u\n",
+    //         Pins::LR_NSS, Pins::LR_BUSY, Pins::LR_NRESET );
+    // printf( "    GPS    : UART0   GPIO RX=%u TX=%u\n",
+    //         Pins::GPS_UART_RX, Pins::GPS_UART_TX );
+    // printf( "    Freq   : %lu Hz  SF%u  BW%u  sync=0x%02X\n\n",
+    //         ( unsigned long ) LoRaCfg::FREQ_HZ,
+    //         LoRaCfg::SF, LoRaCfg::BW, LoRaCfg::SYNC_WORD );
 
-    static Rp2040Hal hal({
-        .spi         = spi0,
-        .pin_sck     = board::kSpiSck,
-        .pin_mosi    = board::kSpiMosi,
-        .pin_miso    = board::kSpiMiso,
-        .pin_cs      = board::kSpiCs,
-        .spi_freq_hz = 1'000'000,
-    });
+    // // flush stdout before FreeRTOS takes over
+    // fflush( stdout );
 
-    static SX127x<Rp2040Hal> radio(hal, {
-        .pin_reset       = board::kLoraReset,
-        .pin_dio0        = board::kLoraDio0,
-        .frequency_hz    = 915'000'000,
-        .bandwidth       = sx127x::bw::index(sx127x::bw::Value::k125),
-        .spreading_factor= static_cast<uint8_t>(sx127x::sf::Value::k9),
-        .coding_rate     = static_cast<uint8_t>(sx127x::cr::Value::k4_5),
-        .tx_power_dbm    = 14,
-    });
+    g_gps_queue = xQueueCreateStatic( GPS_QUEUE_DEPTH,
+                                       sizeof( GpsData ),
+                                       s_gps_queue_storage,
+                                       &s_gps_queue_buf );
 
-    xTaskCreate(lora_task, "lora", 1024, &radio, tskIDLE_PRIORITY + 1, nullptr);
+    g_log_queue = xQueueCreateStatic( LOG_QUEUE_DEPTH,
+                                       sizeof( LogMessage ),
+                                       s_log_queue_storage,
+                                       &s_log_queue_buf );
+
+    usb_task_init();
+
+    TaskHandle_t h = xTaskCreateStatic( heartbeat_task, "hb", 256,
+                                            NULL, tskIDLE_PRIORITY + 1,
+                                            s_hb_stack, &s_hb_tcb );
+    configASSERT( h );
+    vTaskCoreAffinitySet( h, ( 1u << 0 ) );
+
+    TaskHandle_t test = xTaskCreateStatic( test_task, "test", 1024,
+                                      NULL, tskIDLE_PRIORITY + 2,
+                                      s_test_stack, &s_test_tcb );
+    configASSERT( test );
+    // vTaskCoreAffinitySet( test, 0x01);
+
+    // gps_task_init();
+    // lora_task_init();
+
     vTaskStartScheduler();
 
-    for (;;) {
-        tight_loop_contents();
-    }
+    for ( ;; ) {}
 }

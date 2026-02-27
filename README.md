@@ -1,14 +1,27 @@
 # Bareman-Tracker
 
-RP2350 + RFM95W (SX1276) starter project using FreeRTOS and the in-repo LoRa stub driver.
+RP2350 custom PCB with a LR1121 with this pinout:
 
-Quick start (from repo root):
+| Pin | Function |
+| --- | -------- |
+| 6   | SPI0 SCK |
+| 4   | SPI0 MOSI|
+| 7   | SPI0 MISO|
+| 5   | SPI0 NSS |
+| 0   | LR1121 BUSY |
+| 1   | LR1121 NRESET |
 
-```
-cmake -S projects/bareman_tracker -B build/bareman_tracker -G Ninja
-cmake --build build/bareman_tracker
-```
+With GPS on UART here:
 
-Notes:
-- Update the pin map in `projects/bareman_tracker/src/main.cpp` to match your board wiring.
-- Override the board if needed: `-DPICO_BOARD=<your_board>`.
+| Pin | Function |
+| --- | -------- |
+| 16 | UART0 TX |
+| 17 | UART0 RX |
+
+LEDs on:
+
+| Pin | Function |
+| --- | -------- |
+| 12  | STATUS   |
+| 13  | TX       |
+| 14  | RX       |
