@@ -2,9 +2,11 @@
 // FreeRTOS / RP2350
 //
 // Task layout:
-//   gps  (pri 3) – UART0 NMEA parse; overwrites g_gps_queue
-//   lora (pri 2) – reads g_gps_queue; transmits JSON via LR1121 at 915 MHz
-//   usb  (pri 1) – drains g_log_queue; sole caller of printf()
+//   gps       (pri 3) – UART0 NMEA parse; overwrites g_gps_queue
+//   lora      (pri 4) – reads g_gps_queue + g_baro_queue; transmits SIGMA LoRa frames
+//   baro      (pri 1-3) – MS5607 sample + reader, overwrites g_baro_queue
+//   log_flash (pri 1) – drains g_logger_queue; commits SigmaStorageFullRecords to flash
+//   usb       (pri 1) – drains g_log_queue; sole caller of printf()
 //
 // All FreeRTOS objects are statically allocated.
 
@@ -13,19 +15,31 @@
 #include "Tasks/GPS/gps_task.hpp"
 #include "Tasks/LoRa/lora_task.hpp"
 #include "Tasks/USB/usb_task.hpp"
+#include "Tasks/Baro/baro_task.hpp"
+#include "Tasks/Logger/logger_task.hpp"
 
 #include "pico/stdlib.h"
 #include <stdio.h>
 
 // ── Shared FreeRTOS handles ───────────────────────────────────────────────────
-QueueHandle_t g_gps_queue = nullptr;
-QueueHandle_t g_log_queue = nullptr;
+QueueHandle_t g_gps_queue    = nullptr;
+QueueHandle_t g_log_queue    = nullptr;
+QueueHandle_t g_baro_queue   = nullptr;
+QueueHandle_t g_logger_queue = nullptr;
+
+volatile FlightState g_flight_state = FlightState::GROUND_IDLE;
 
 static StaticQueue_t s_gps_queue_buf;
 static uint8_t       s_gps_queue_storage[ GPS_QUEUE_DEPTH * sizeof( GpsData ) ];
 
 static StaticQueue_t s_log_queue_buf;
 static uint8_t       s_log_queue_storage[ LOG_QUEUE_DEPTH * sizeof( LogMessage ) ];
+
+static StaticQueue_t s_baro_queue_buf;
+static uint8_t       s_baro_queue_storage[ BARO_QUEUE_DEPTH * sizeof( BaroData ) ];
+
+static StaticQueue_t s_logger_queue_buf;
+static uint8_t       s_logger_queue_storage[ LOGGER_QUEUE_DEPTH * sizeof( SigmaStorageFullRecord ) ];
 
 // ── FreeRTOS static-allocation callbacks ──────────────────────────────────────
 extern "C" {
@@ -94,27 +108,9 @@ static void heartbeat_task( void* )
     gpio_set_dir( Pins::STATUS, GPIO_OUT );
     for ( ;; ) {
         gpio_put( Pins::STATUS, 1 );
-        // printf( "[heartbeat] led on\n" );
         vTaskDelay( pdMS_TO_TICKS( 500 ) );
         gpio_put( Pins::STATUS, 0 );
-        // printf( "[heartbeat] led off\n" );
         vTaskDelay( pdMS_TO_TICKS( 500 ) );
-    }
-}
-
-// ── Test task ─────────────────────────────────────────────────────────────────
-static StaticTask_t s_test_tcb;
-static StackType_t  s_test_stack[ 1024 ];
-
-volatile uint32_t g_test_ticks = 0;   // incremented by test_task; no queue needed
-
-static void test_task( void* )
-{
-    for ( ;; ) {
-        g_test_ticks++;
-        struct LogMessage msg = { .buf = "Hello from test_task!\n" };
-        xQueueSend( g_log_queue, &msg, portMAX_DELAY );
-        vTaskDelay( pdMS_TO_TICKS( 1000 ) );
     }
 }
 
@@ -122,21 +118,6 @@ static void test_task( void* )
 int main( void )
 {
     stdio_init_all();
-
-    // sleep_ms(2500);
-
-    // printf( "=== Bareman Tracker — LR1121 GPS LoRa TX ===\n" );
-    // printf( "    Board  : RP2350 custom PCB\n" );
-    // printf( "    LoRa   : LR1121  SPI0  NSS=%u BUSY=%u RST=%u\n",
-    //         Pins::LR_NSS, Pins::LR_BUSY, Pins::LR_NRESET );
-    // printf( "    GPS    : UART0   GPIO RX=%u TX=%u\n",
-    //         Pins::GPS_UART_RX, Pins::GPS_UART_TX );
-    // printf( "    Freq   : %lu Hz  SF%u  BW%u  sync=0x%02X\n\n",
-    //         ( unsigned long ) LoRaCfg::FREQ_HZ,
-    //         LoRaCfg::SF, LoRaCfg::BW, LoRaCfg::SYNC_WORD );
-
-    // // flush stdout before FreeRTOS takes over
-    // fflush( stdout );
 
     g_gps_queue = xQueueCreateStatic( GPS_QUEUE_DEPTH,
                                        sizeof( GpsData ),
@@ -148,22 +129,27 @@ int main( void )
                                        s_log_queue_storage,
                                        &s_log_queue_buf );
 
-    usb_task_init();
+    g_baro_queue = xQueueCreateStatic( BARO_QUEUE_DEPTH,
+                                        sizeof( BaroData ),
+                                        s_baro_queue_storage,
+                                        &s_baro_queue_buf );
+
+    g_logger_queue = xQueueCreateStatic( LOGGER_QUEUE_DEPTH,
+                                          sizeof( SigmaStorageFullRecord ),
+                                          s_logger_queue_storage,
+                                          &s_logger_queue_buf );
 
     TaskHandle_t h = xTaskCreateStatic( heartbeat_task, "hb", 256,
                                             NULL, tskIDLE_PRIORITY + 1,
                                             s_hb_stack, &s_hb_tcb );
     configASSERT( h );
-    vTaskCoreAffinitySet( h, ( 1u << 0 ) );
 
-    TaskHandle_t test = xTaskCreateStatic( test_task, "test", 1024,
-                                      NULL, tskIDLE_PRIORITY + 2,
-                                      s_test_stack, &s_test_tcb );
-    configASSERT( test );
-    // vTaskCoreAffinitySet( test, 0x01);
+    usb_task_init();
+    baro_task_init();
+    logger_task_init();
 
-    // gps_task_init();
-    // lora_task_init();
+    gps_task_init();
+    lora_task_init();
 
     vTaskStartScheduler();
 

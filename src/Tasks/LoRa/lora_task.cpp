@@ -5,6 +5,8 @@
 #include "lr11xx_hal.h"
 #include "lr11xx_radio.h"
 #include "lr11xx_regmem.h"
+#include "hardware/gpio.h"
+#include "pico/time.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -22,18 +24,22 @@ static lr11xx_hal_context_t s_radio = LR11XX_HAL_CONTEXT_INIT(
     Pins::LR_NRESET
 );
 
-// Payload buffer — max 255 bytes; JSON fits easily within 128.
-#define MAX_PAYLOAD 128
-
 // ── Radio init ────────────────────────────────────────────────────────────────
 static bool radio_init( void )
 {
+    log_print( "[lora] pre-init  BUSY=%d  NRESET=%d\n",
+               gpio_get( Pins::LR_BUSY ), gpio_get( Pins::LR_NRESET ) );
+
     lr11xx_hal_init( &s_radio );
 
+    log_print( "[lora] post-init BUSY=%d\n", gpio_get( Pins::LR_BUSY ) );
+
     if ( lr11xx_hal_reset( &s_radio ) != LR11XX_HAL_STATUS_OK ) {
-        log_print( "[lora] reset failed\n" );
+        log_print( "[lora] reset failed — BUSY=%d\n", gpio_get( Pins::LR_BUSY ) );
         return false;
     }
+
+    log_print( "[lora] chip ready  BUSY=%d\n", gpio_get( Pins::LR_BUSY ) );
 
     // LoRa packet type
     if ( lr11xx_radio_set_pkt_type( &s_radio, LR11XX_RADIO_PKT_TYPE_LORA )
@@ -129,43 +135,57 @@ static bool radio_transmit( const uint8_t* payload, uint8_t len )
 }
 
 // ── Task ─────────────────────────────────────────────────────────────────────
-static void lora_task( void* param )
+void lora_task( void* param )
 {
     ( void ) param;
+
+    // For 10 seconds print "lora init..." every second, then try to init the radio.
+    for ( int i = 0; i < 10; i++ ) {
+        log_print( "[lora] init in %d seconds...\n", 10 - i );
+        vTaskDelay( pdMS_TO_TICKS( 1000 ) );
+    }
 
     if ( !radio_init() ) {
         log_print( "[lora] init failed — task halting\n" );
         while ( true ) vTaskDelay( portMAX_DELAY );
     }
 
-    char       json[ MAX_PAYLOAD ];
-    GpsData    gps;
-    TickType_t last_tx = 0;
+    // SIGMA LoRa frame — 36-byte payload + 9-byte framing = 45 bytes on-air.
+    uint8_t frame[ SIGMA_MAX_FRAME ];
 
     for ( ;; ) {
-        TickType_t now = xTaskGetTickCount();
+        SigmaLoRaData d;
+        d.boot_ms = to_ms_since_boot( get_absolute_time() );
+        d.state   = g_flight_state;
 
-        if ( ( now - last_tx ) >= pdMS_TO_TICKS( LoRaCfg::TX_PERIOD_MS ) ) {
-            last_tx = now;
-
-            if ( xQueuePeek( g_gps_queue, &gps, 0 ) == pdTRUE ) {
-                int len = snprintf( json, sizeof( json ),
-                                    "{\"lat\":%.6f,\"lon\":%.6f,\"alt\":%.1f,\"sats\":%u}",
-                                    gps.lat, gps.lon, gps.alt_m, gps.satellites );
-
-                if ( len > 0 && len < ( int ) sizeof( json ) ) {
-                    bool ok = radio_transmit(
-                        reinterpret_cast<const uint8_t*>( json ),
-                        static_cast<uint8_t>( len ) );
-
-                    log_print( "[lora] tx %s  (%d B)\n", ok ? "ok" : "FAIL", len );
-                }
-            } else {
-                log_print( "[lora] waiting for GPS fix...\n" );
-            }
+        // Priority 1: GPS lat/lon/alt — always prefer GPS position when available.
+        GpsData gps;
+        if ( xQueuePeek( g_gps_queue, &gps, 0 ) == pdTRUE ) {
+            d.lat        = gps.lat;
+            d.lon        = gps.lon;
+            d.alt_gps_m  = static_cast<float>( gps.alt_m );
+            d.satellites = gps.satellites;
+            d.flags     |= SIGMA_FLAG_GPS_VALID;
         }
 
-        vTaskDelay( pdMS_TO_TICKS( 10 ) );
+        // Baro altitude and pressure.
+        BaroData baro;
+        if ( xQueuePeek( g_baro_queue, &baro, 0 ) == pdTRUE ) {
+            d.alt_baro_m = static_cast<float>( baro.altitude_dm ) * 0.1f;
+            d.flags     |= SIGMA_FLAG_BARO_VALID;
+        }
+
+        size_t n = d.serialize( frame, sizeof( frame ) );
+        if ( n > 0 ) {
+            bool ok = radio_transmit( frame, static_cast<uint8_t>( n ) );
+            log_print( "[lora] tx %u bytes  gps=%s baro=%s  %s\n",
+                       (unsigned) n,
+                       ( d.flags & SIGMA_FLAG_GPS_VALID )  ? "ok" : "--",
+                       ( d.flags & SIGMA_FLAG_BARO_VALID ) ? "ok" : "--",
+                       ok ? "ok" : "FAIL" );
+        }
+
+        vTaskDelay( pdMS_TO_TICKS( LoRaCfg::TX_PERIOD_MS ) );
     }
 }
 
@@ -174,7 +194,9 @@ static StackType_t  s_lora_stack[ 2048 ];
 
 void lora_task_init()
 {
-    configASSERT( xTaskCreateStatic( lora_task, "lora", 2048,
-                                      NULL, tskIDLE_PRIORITY + 2,
-                                      s_lora_stack, &s_lora_tcb ) );
+    TaskHandle_t lora_handle = xTaskCreateStatic( lora_task, "lora", 2048,
+                                NULL, tskIDLE_PRIORITY + 4,
+                                s_lora_stack, &s_lora_tcb );
+    configASSERT( lora_handle );
+    vTaskCoreAffinitySet( lora_handle, ( 1u << 0 ) );
 }

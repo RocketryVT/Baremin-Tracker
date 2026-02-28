@@ -7,15 +7,16 @@
 
 
 #define GPS_UART      uart0
-#define GPS_BAUD      9600
+#define GPS_BAUD      38400
 
 static void gps_task( void* param )
 {
     ( void ) param;
 
+    gpio_set_function(Pins::GPS_UART_TX, UART_FUNCSEL_NUM(GPS_UART, Pins::GPS_UART_TX));
+    gpio_set_function(Pins::GPS_UART_RX, UART_FUNCSEL_NUM(GPS_UART, Pins::GPS_UART_RX));
     uart_init( GPS_UART, GPS_BAUD );
-    gpio_set_function( Pins::GPS_UART_TX, GPIO_FUNC_UART );
-    gpio_set_function( Pins::GPS_UART_RX, GPIO_FUNC_UART );
+
     uart_set_hw_flow( GPS_UART, false, false );
     uart_set_format( GPS_UART, 8, 1, UART_PARITY_NONE );
     uart_set_fifo_enabled( GPS_UART, true );
@@ -26,11 +27,27 @@ static void gps_task( void* param )
     gps::GPSParser parser;
     bool           had_fix = false;
 
+    char nmea_buf[ 128 ];
+    int  nmea_len = 0;
+
     for ( ;; ) {
-        // Drain UART FIFO — at 9600 baud, 10 ms ≈ 9.6 bytes; FIFO is 32 deep
         while ( uart_is_readable( GPS_UART ) ) {
             char c = ( char ) uart_getc( GPS_UART );
             parser.parse( c );
+
+            // Echo raw NMEA to USB console (when "nmea on")
+            if ( c == 0 ) {
+                continue;
+            } else if ( (int)c == 10 ) {
+                nmea_buf[ nmea_len ] = '\0';
+                if ( nmea_len > 0 && g_nmea_raw_enabled )
+                    log_print( "%s\n", nmea_buf );
+                nmea_len = 0;
+            } else if ( c != '\r' && nmea_len < ( int ) sizeof( nmea_buf ) - 1 ) {
+                nmea_buf[ nmea_len++ ] = c;
+            } else if ( nmea_len >= ( int ) sizeof( nmea_buf ) - 1 ) {
+                nmea_len = 0;
+            }
         }
 
         if ( parser.hasFix() ) {
@@ -49,7 +66,6 @@ static void gps_task( void* param )
                 static_cast<uint8_t>( c.satellites )
             };
 
-            // Overwrite so the LoRa task always sees the latest fix
             xQueueOverwrite( g_gps_queue, &data );
 
         } else if ( had_fix ) {
@@ -57,7 +73,7 @@ static void gps_task( void* param )
             had_fix = false;
         }
 
-        vTaskDelay( pdMS_TO_TICKS( 10 ) );   // 100 Hz poll
+        vTaskDelay( pdMS_TO_TICKS( 1 ) );
     }
 }
 
@@ -66,7 +82,9 @@ static StackType_t  s_gps_stack[ 1024 ];
 
 void gps_task_init()
 {
-    configASSERT( xTaskCreateStatic( gps_task, "gps", 1024,
+    TaskHandle_t h = xTaskCreateStatic( gps_task, "gps", 1024,
                                       NULL, tskIDLE_PRIORITY + 3,
-                                      s_gps_stack, &s_gps_tcb ) );
+                                      s_gps_stack, &s_gps_tcb );
+    configASSERT( h );
+    vTaskCoreAffinitySet( h, ( 1u << 0 ) );
 }

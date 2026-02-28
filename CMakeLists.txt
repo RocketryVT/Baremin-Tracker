@@ -47,6 +47,13 @@ if (NOT EXISTS "${GPS_ROOT}/CMakeLists.txt")
 endif()
 add_subdirectory(${GPS_ROOT} ${CMAKE_CURRENT_BINARY_DIR}/gps)
 
+# pico_logger — flash ring-buffer logger.
+if (NOT EXISTS "${PICO_LOGGER_PATH}/CMakeLists.txt")
+    message(FATAL_ERROR "pico_logger not found at ${PICO_LOGGER_PATH}. "
+            "Initialize the submodule or set PICO_LOGGER_PATH.")
+endif()
+add_subdirectory(${PICO_LOGGER_PATH} ${CMAKE_CURRENT_BINARY_DIR}/pico_logger)
+
 add_subdirectory(src)
 
 add_compile_options(
