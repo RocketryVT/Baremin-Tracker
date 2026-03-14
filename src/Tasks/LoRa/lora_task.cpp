@@ -3,6 +3,7 @@
 
 #include "lr11xx_hal_context.h"
 #include "lr11xx_hal.h"
+#include "lr11xx_system.h"
 #include "lr11xx_radio.h"
 #include "lr11xx_regmem.h"
 #include "hardware/gpio.h"
@@ -40,6 +41,46 @@ static bool radio_init( void )
     }
 
     log_print( "[lora] chip ready  BUSY=%d\n", gpio_get( Pins::LR_BUSY ) );
+
+    // Verify chip is alive and print firmware version
+    lr11xx_system_version_t ver = {};
+    if ( lr11xx_system_get_version( &s_radio, &ver ) == LR11XX_STATUS_OK ) {
+        log_print( "[lora] LR11XX hw=0x%02X  type=0x%02X  fw=%u.%u\n",
+                   ver.hw, ver.type, ver.fw >> 8, ver.fw & 0xFF );
+    } else {
+        log_print( "[lora] get_version failed — SPI may be broken\n" );
+        return false;
+    }
+
+    // Put chip in standby (RC oscillator) before configuring
+    if ( lr11xx_system_set_standby( &s_radio, LR11XX_SYSTEM_STANDBY_CFG_RC )
+         != LR11XX_STATUS_OK ) {
+        log_print( "[lora] set_standby failed\n" );
+        return false;
+    }
+
+    // RF switch — tells the chip how to drive RFSW0/RFSW1 (DIO5/DIO6) in each
+    // mode so the external RF switch routes the signal correctly.
+    // ⚠ Bitmask values must match your PCB schematic.
+    // Typical Semtech EVK mapping for HP PA (sub-GHz):
+    //   standby → both low   rx   → RFSW0 high
+    //   tx_hp   → RFSW1 high (HP PA path, matches pa_sel=HP above)
+    //   tx      → both high  (LP PA path — unused here but set for completeness)
+    const lr11xx_system_rfswitch_cfg_t rf_sw = {
+        .enable  = LR11XX_SYSTEM_RFSW0_HIGH | LR11XX_SYSTEM_RFSW1_HIGH,
+        .standby = 0,
+        .rx      = LR11XX_SYSTEM_RFSW0_HIGH,
+        .tx      = LR11XX_SYSTEM_RFSW0_HIGH | LR11XX_SYSTEM_RFSW1_HIGH,
+        .tx_hp   = LR11XX_SYSTEM_RFSW1_HIGH,
+        .tx_hf   = 0,
+        .gnss    = 0,
+        .wifi    = 0,
+    };
+    if ( lr11xx_system_set_dio_as_rf_switch( &s_radio, &rf_sw )
+         != LR11XX_STATUS_OK ) {
+        log_print( "[lora] set_dio_as_rf_switch failed\n" );
+        return false;
+    }
 
     // LoRa packet type
     if ( lr11xx_radio_set_pkt_type( &s_radio, LR11XX_RADIO_PKT_TYPE_LORA )
@@ -134,6 +175,30 @@ static bool radio_transmit( const uint8_t* payload, uint8_t len )
     return lr11xx_hal_wait_busy( &s_radio ) == LR11XX_HAL_STATUS_OK;
 }
 
+// ── Debug helpers ─────────────────────────────────────────────────────────────
+static void log_hex( const char* prefix, const uint8_t* data, size_t len )
+{
+    log_print( "%s (%u bytes):\n", prefix, ( unsigned ) len );
+    for ( size_t i = 0; i < len; ++i ) {
+        if ( i % 16 == 0 ) log_print( "  %04X: ", ( unsigned ) i );
+        log_print( "%02X ", data[i] );
+        if ( i % 16 == 15 || i == len - 1 ) log_print( "\n" );
+    }
+}
+
+static void log_sigma_lora( const SigmaLoRaData& d )
+{
+    log_print( "[lora] struct: boot_ms=%lu  state=%u  sats=%u  flags=0x%02X\n",
+               ( unsigned long ) d.boot_ms, ( unsigned ) d.state,
+               ( unsigned ) d.satellites,   ( unsigned ) d.flags );
+    log_print( "  lat=%.7f  lon=%.7f  alt_gps=%.1f m  alt_baro=%.1f m  speed=%.2f m/s\n",
+               d.lat, d.lon,
+               ( double ) d.alt_gps_m, ( double ) d.alt_baro_m, ( double ) d.speed_ms );
+    log_print( "  q=[%.5f  %.5f  %.5f  %.5f]\n",
+               ( double ) d.q[0], ( double ) d.q[1],
+               ( double ) d.q[2], ( double ) d.q[3] );
+}
+
 // ── Task ─────────────────────────────────────────────────────────────────────
 void lora_task( void* param )
 {
@@ -175,8 +240,11 @@ void lora_task( void* param )
             d.flags     |= SIGMA_FLAG_BARO_VALID;
         }
 
+        log_sigma_lora( d );
+
         size_t n = d.serialize( frame, sizeof( frame ) );
         if ( n > 0 ) {
+            log_hex( "[lora] raw", frame, n );
             bool ok = radio_transmit( frame, static_cast<uint8_t>( n ) );
             log_print( "[lora] tx %u bytes  gps=%s baro=%s  %s\n",
                        (unsigned) n,
