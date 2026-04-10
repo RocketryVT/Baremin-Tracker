@@ -21,7 +21,7 @@
 #include "pico/stdlib.h"
 #include <stdio.h>
 
-// ── Shared FreeRTOS handles ───────────────────────────────────────────────────
+// -- Shared FreeRTOS handles ---------------------------------------------------
 QueueHandle_t g_gps_queue    = nullptr;
 QueueHandle_t g_log_queue    = nullptr;
 QueueHandle_t g_baro_queue   = nullptr;
@@ -41,7 +41,7 @@ static uint8_t       s_baro_queue_storage[ BARO_QUEUE_DEPTH * sizeof( BaroData )
 static StaticQueue_t s_logger_queue_buf;
 static uint8_t       s_logger_queue_storage[ LOGGER_QUEUE_DEPTH * sizeof( SigmaStorageFullRecord ) ];
 
-// ── FreeRTOS static-allocation callbacks ──────────────────────────────────────
+// -- FreeRTOS static-allocation callbacks --------------------------------------
 extern "C" {
 
 void vApplicationGetIdleTaskMemory( StaticTask_t**  ppxIdleTaskTCBBuffer,
@@ -98,7 +98,7 @@ void vApplicationMallocFailedHook( void )
 
 } // extern "C"
 
-// ── Heartbeat task ────────────────────────────────────────────────────────────
+// -- Heartbeat task ------------------------------------------------------------
 static StaticTask_t s_hb_tcb;
 static StackType_t  s_hb_stack[ 256 ];
 
@@ -114,7 +114,7 @@ static void heartbeat_task( void* )
     }
 }
 
-// ── Entry point ───────────────────────────────────────────────────────────────
+// -- Entry point ---------------------------------------------------------------
 int main( void )
 {
     stdio_init_all();

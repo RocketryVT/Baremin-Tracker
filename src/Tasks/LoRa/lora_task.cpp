@@ -63,9 +63,9 @@ static bool radio_init( void )
     // mode so the external RF switch routes the signal correctly.
     // ⚠ Bitmask values must match your PCB schematic.
     // Typical Semtech EVK mapping for HP PA (sub-GHz):
-    //   standby → both low   rx   → RFSW0 high
-    //   tx_hp   → RFSW1 high (HP PA path, matches pa_sel=HP above)
-    //   tx      → both high  (LP PA path — unused here but set for completeness)
+    //   standby -> both low   rx   -> RFSW0 high
+    //   tx_hp   -> RFSW1 high (HP PA path, matches pa_sel=HP above)
+    //   tx      -> both high  (LP PA path — unused here but set for completeness)
     const lr11xx_system_rfswitch_cfg_t rf_sw = {
         .enable  = LR11XX_SYSTEM_RFSW0_HIGH | LR11XX_SYSTEM_RFSW1_HIGH,
         .standby = 0,

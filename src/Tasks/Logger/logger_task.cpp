@@ -7,7 +7,7 @@
 
 // Flash log starts at 1 MB offset — well past any RP2350 code image.
 // Leaves ~3 MB for storage on a 4 MB Pico 2 board.
-// At 50 Hz × 128 bytes/record → ~8 minutes of flight data.
+// At 50 Hz × 128 bytes/record -> ~8 minutes of flight data.
 #define BAREMAN_LOG_FLASH_ADDR  0x00100000u
 
 // Pre-launch circular buffer: 10 s × 50 Hz × 128 bytes = 64 000 bytes.

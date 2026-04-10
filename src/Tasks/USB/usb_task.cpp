@@ -26,7 +26,7 @@ void log_print( const char* fmt, ... )
 }
 
 // ── Console output flags ──────────────────────────────────────────────────────
-// All default false → absolutely silent at boot, matching the user requirement.
+// All default false -> absolutely silent at boot, matching the user requirement.
 static bool s_log_enabled  = false;   // print task log messages from g_log_queue
 static bool s_stream_baro  = false;   // print fresh baro data at ~1 Hz
 static bool s_stream_gps   = false;   // print fresh GPS data at ~1 Hz
@@ -67,7 +67,7 @@ static void apply_on_off( const char* line, size_t cmd_len, bool& flag )
               ( arg[3] == '\0' || isspace( (unsigned char) arg[3] ) ) )
         flag = false;
     else
-        flag = !flag;   // bare command with no argument → toggle
+        flag = !flag;   // bare command with no argument -> toggle
 }
 
 // ── Commands ──────────────────────────────────────────────────────────────────

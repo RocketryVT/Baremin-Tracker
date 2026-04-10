@@ -34,10 +34,10 @@ static StackType_t  s_reader_stack[ 512 ];
 //   2. Main loop: state transitions + dual-rate queue push (10 Hz pad / 50 Hz flight).
 //
 // State transitions (baro only — no IMU):
-//   GROUND_IDLE     → POWERED_ASCENT  when AGL ≥ LAUNCH_AGL_M
-//   POWERED_ASCENT  → APOGEE          when alt drops ≥ APOGEE_DELTA_M below peak
-//   APOGEE          → DESCENT_DROGUE  immediately (single-sample transition)
-//   DESCENT_DROGUE  → LANDED          when AGL ≤ LANDED_AGL_M for LANDED_STABLE_COUNT samples
+//   GROUND_IDLE     -> POWERED_ASCENT  when AGL ≥ LAUNCH_AGL_M
+//   POWERED_ASCENT  -> APOGEE          when alt drops ≥ APOGEE_DELTA_M below peak
+//   APOGEE          -> DESCENT_DROGUE  immediately (single-sample transition)
+//   DESCENT_DROGUE  -> LANDED          when AGL ≤ LANDED_AGL_M for LANDED_STABLE_COUNT samples
 static void baro_reader_task( void* )
 {
     // ── Phase 1: ground calibration ───────────────────────────────────────────

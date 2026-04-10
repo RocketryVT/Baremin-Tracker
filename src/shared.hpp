@@ -6,7 +6,7 @@
 
 #include "SIGMA.hpp"   // packet / record definitions (include path added via CMakeLists)
 
-// ── Log queue ─────────────────────────────────────────────────────────────────
+// -- Log queue -----------------------------------------------------------------
 // Tasks call log_print() instead of printf() directly to avoid stdio contention
 // under FreeRTOS SMP.  The USB task is the sole consumer and the only code that
 // calls printf().
@@ -23,7 +23,7 @@ extern QueueHandle_t g_log_queue;
 
 void log_print( const char* fmt, ... ) __attribute__(( format( printf, 1, 2 ) ));
 
-// ── GPS fix data ──────────────────────────────────────────────────────────────
+// -- GPS fix data --------------------------------------------------------------
 // Written by the GPS task; read by the LoRa task.
 struct GpsData {
     double   lat;
@@ -50,7 +50,7 @@ struct GpsData {
 #define GPS_QUEUE_DEPTH  1
 extern QueueHandle_t g_gps_queue;
 
-// ── Barometer data ────────────────────────────────────────────────────────────
+// -- Barometer data ------------------------------------------------------------
 // Written by baro_reader_task; read by LoRa task.
 // Units match MS5607 driver output (ALTITUDE_SCALE=10):
 //   pressure_pa      — Pa        (divide by 100 for hPa / mbar)
@@ -65,27 +65,27 @@ struct BaroData {
 #define BARO_QUEUE_DEPTH  1
 extern QueueHandle_t g_baro_queue;
 
-// ── Flash logger queue ────────────────────────────────────────────────────────
+// -- Flash logger queue --------------------------------------------------------
 // baro_reader_task pushes one SigmaStorageFullRecord per sample.
 // logger_task drains the queue and commits records to flash via pico_logger.
 // Depth-32 absorbs short bursts at 50 Hz; records dropped if logger falls behind.
 #define LOGGER_QUEUE_DEPTH  32
 extern QueueHandle_t g_logger_queue;
 
-// ── Global flight state ───────────────────────────────────────────────────────
+// -- Global flight state -------------------------------------------------------
 // Written by baro_reader_task; read by logger_task and lora_task.
 // volatile ensures cross-core visibility without a mutex (single writer).
 extern volatile FlightState g_flight_state;
 
-// ── NMEA raw stream flag ───────────────────────────────────────────────────────
+// -- NMEA raw stream flag -------------------------------------------------------
 // Set by USB console ("nmea on/off"). Read by GPS task to gate raw sentence output.
 extern volatile bool g_nmea_raw_enabled;
 
-// ── UBX hex dump flag ─────────────────────────────────────────────────────────
+// -- UBX hex dump flag ---------------------------------------------------------
 // Set by USB console ("hex on/off"). Dumps every raw UART byte as hex.
 extern volatile bool g_ubx_hex_enabled;
 
-// ── Pin assignments ───────────────────────────────────────────────────────────
+// -- Pin assignments -----------------------------------------------------------
 namespace Pins {
     // LR1121 — SPI0
     static constexpr uint LR_SCK     = 6;
@@ -108,11 +108,11 @@ namespace Pins {
     static constexpr uint DBG_RX     = 14;
 
     // GPS — UART0
-    static constexpr uint GPS_UART_TX = 16;   // RP2350 TX → GPS RX
-    static constexpr uint GPS_UART_RX = 17;   // GPS TX → RP2350 RX (NMEA input)
+    static constexpr uint GPS_UART_TX = 16;   // RP2350 TX  GPS RX
+    static constexpr uint GPS_UART_RX = 17;   // GPS TX  RP2350 RX (NMEA input)
 }
 
-// ── LoRa radio parameters (must match ground station receiver) ────────────────
+// -- LoRa radio parameters (must match ground station receiver) ----------------
 namespace LoRaCfg {
     static constexpr uint32_t FREQ_HZ   = 915'000'000;
     static constexpr uint8_t  SF        = 7;      // Spreading Factor 7
