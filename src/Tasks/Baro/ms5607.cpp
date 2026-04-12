@@ -1,4 +1,5 @@
 #include "ms5607.hpp"
+#include "Tasks/I2C/i2c_task.hpp"
 
 static const int32_t altitude_table[] = {
 #include "altitude-pa.h"
@@ -7,6 +8,28 @@ static const int32_t altitude_table[] = {
 #define ALT_SCALE (1 << ALT_SHIFT)
 #define ALT_MASK (ALT_SCALE - 1)
 
+// ---------------------------------------------------------------------------
+// Low-level helpers — all i2c0 traffic routed through the i2c task queue.
+// ---------------------------------------------------------------------------
+
+static void baro_write(uint8_t addr, uint8_t cmd_byte)
+{
+    I2cRequest req;
+    i2c_req_write(&req, addr, &cmd_byte, 1);
+    i2c_req_submit_wait(&req);
+}
+
+static void baro_write_read(uint8_t addr,
+                            uint8_t cmd_byte,
+                            uint8_t* buf, uint8_t len)
+{
+    I2cRequest req;
+    i2c_req_write_read(&req, addr, &cmd_byte, 1, buf, len);
+    i2c_req_submit_wait(&req);
+}
+
+// ---------------------------------------------------------------------------
+
 void MS5607::initialize() {
     sample_state = NOT_SAMPLING;
 
@@ -14,29 +37,31 @@ void MS5607::initialize() {
 
     ms5607_cmd cmd;
     cmd.data = RESET_COMMAND;
-
     ms5607_write_cmd(&cmd);
 
     sleep_ms(500);
 
     cmd.data = 0;
-    cmd.fields.PROM = true;
+    cmd.fields.PROM  = true;
     cmd.fields.PROM2 = true;
 
-    cmd.fields.ADDR_OSR = PROM_CALIBRATION_COEFFICENT_1_ADDR;
-
-    for (uint8_t prom_addr = PROM_CALIBRATION_COEFFICENT_1_ADDR; prom_addr <= PROM_CALIBRATION_COEFFICENT_6_ADDR; prom_addr++) {
+    for (uint8_t prom_addr = PROM_CALIBRATION_COEFFICENT_1_ADDR;
+         prom_addr <= PROM_CALIBRATION_COEFFICENT_6_ADDR;
+         prom_addr++)
+    {
         sleep_ms(100);
         cmd.fields.ADDR_OSR = prom_addr;
-        ms5607_write_cmd(&cmd);
-        i2c_read_blocking(i2c, addr, buffer, 2, false);
 
-        prom[prom_addr - 1] = static_cast<uint16_t>((((uint16_t) buffer[0]) << 8) | ((uint16_t) buffer[1]));
+        uint8_t buf[2];
+        baro_write_read(addr, cmd.data, buf, 2);
+
+        prom[prom_addr - 1] = static_cast<uint16_t>(
+            (static_cast<uint16_t>(buf[0]) << 8) | static_cast<uint16_t>(buf[1]));
     }
 }
 
 void MS5607::ms5607_write_cmd(ms5607_cmd* cmd) {
-    i2c_write_blocking(i2c, addr, (uint8_t *) cmd, 1, false);
+    baro_write(addr, cmd->data);
 }
 
 void MS5607::ms5607_start_sample() {
@@ -62,9 +87,7 @@ void MS5607::ms5607_sample_handler(void* pvParameters) {
             until all the pending events have been processed */
             while( ulEventsToProcess > 0 ) {
                 MS5607* alt = (MS5607 *) pvParameters;
-                taskENTER_CRITICAL();
                 alt->ms5607_sample();
-                taskEXIT_CRITICAL();
                 ulEventsToProcess--;
             }
         }
@@ -80,9 +103,7 @@ void MS5607::update_ms5607_task(void* pvParameters) {
     while (1) {
         vTaskDelayUntil(&xLastWakeTime, xFrequency);
         MS5607* alt = (MS5607 *) pvParameters;
-        taskENTER_CRITICAL();
         alt->ms5607_start_sample();
-        taskEXIT_CRITICAL();
     }
 }
 #endif
@@ -109,11 +130,10 @@ void MS5607::ms5607_sample() {
         case NOT_SAMPLING:
             break;
         case PRESSURE_CONVERT: {
-            cmd.fields.CONVERT = 1;
-            cmd.fields.TYPE = TYPE_UNCOMPENSATED_PRESSURE;
+            cmd.fields.CONVERT  = 1;
+            cmd.fields.TYPE     = TYPE_UNCOMPENSATED_PRESSURE;
             cmd.fields.ADDR_OSR = OSR_CONVERT_256;
-
-            ms5607_write_cmd(&cmd);
+            baro_write(addr, cmd.data);
 
             add_alarm_in_us(OSR_256_CONVERSION_TIME_US, MS5607::ms5607_sample_callback, (void *) this, true);
 
@@ -121,16 +141,15 @@ void MS5607::ms5607_sample() {
             break;
         };
         case TEMPERATURE_CONVERT: {
-            cmd.data = ADC_READ_COMMAND;
-            ms5607_write_cmd(&cmd);
-            i2c_read_blocking(i2c, addr, buffer, 3, false);
-            uncompensated_pressure = (((uint32_t) buffer[0]) << 16) | (((uint32_t) buffer[1]) << 8) | ((uint32_t) buffer[2]);
+            baro_write_read(addr, ADC_READ_COMMAND, buffer, 3);
+            uncompensated_pressure = (((uint32_t) buffer[0]) << 16) |
+                                     (((uint32_t) buffer[1]) <<  8) |
+                                      ((uint32_t) buffer[2]);
 
-            cmd.fields.CONVERT = 1;
-            cmd.fields.TYPE = TYPE_UNCOMPENSATED_TEMPERATURE;
+            cmd.fields.CONVERT  = 1;
+            cmd.fields.TYPE     = TYPE_UNCOMPENSATED_TEMPERATURE;
             cmd.fields.ADDR_OSR = OSR_CONVERT_256;
-
-            ms5607_write_cmd(&cmd);
+            baro_write(addr, cmd.data);
 
             add_alarm_in_us(OSR_256_CONVERSION_TIME_US, MS5607::ms5607_sample_callback, (void *) this, true);
 
@@ -138,13 +157,12 @@ void MS5607::ms5607_sample() {
             break;
         };
         case COMPENSATE: {
-            cmd.data = ADC_READ_COMMAND;
-            ms5607_write_cmd(&cmd);
-            i2c_read_blocking(i2c, addr, buffer, 3, false);
-            uncompensated_temperature = (((uint32_t) buffer[0]) << 16) | (((uint32_t) buffer[1]) << 8) | ((uint32_t) buffer[2]);
+            baro_write_read(addr, ADC_READ_COMMAND, buffer, 3);
+            uncompensated_temperature = (((uint32_t) buffer[0]) << 16) |
+                                        (((uint32_t) buffer[1]) <<  8) |
+                                         ((uint32_t) buffer[2]);
             ms5607_compensate();
             altitude = pressure_to_altitude(pressure);
-
 
             sample_state = NOT_SAMPLING;
             if (threshold_callback != NULL) {

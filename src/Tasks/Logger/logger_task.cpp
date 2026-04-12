@@ -6,8 +6,8 @@
 #include <stdlib.h>   // abs
 
 // Flash log starts at 1 MB offset — well past any RP2350 code image.
-// Leaves ~3 MB for storage on a 4 MB Pico 2 board.
-// At 50 Hz × 128 bytes/record -> ~8 minutes of flight data.
+// Leaves ~15 MB for storage on the Bareman 16 MB flash chip.
+// At 50 Hz × 128 bytes/record -> ~130 minutes of flight data.
 #define BAREMAN_LOG_FLASH_ADDR  0x00100000u
 
 // Pre-launch circular buffer: 10 s × 50 Hz × 128 bytes = 64 000 bytes.
@@ -18,7 +18,7 @@ static Logger s_logger( sizeof( SigmaStorageFullRecord ),
                          BAREMAN_LOG_FLASH_ADDR,
                          nullptr );
 
-// ── File-scope recording state ────────────────────────────────────────────────
+// -- File-scope recording state ------------------------------------------------
 // Moved from task-local to file-scope so the console API functions can inspect
 // and modify them safely (logger task checks them on each iteration).
 static volatile bool      s_use_circular      = true;
@@ -26,7 +26,7 @@ static volatile bool      s_recording_stopped = false;
 static volatile bool      s_force_record_on   = false;
 static          TaskHandle_t s_logger_handle  = nullptr;
 
-// ── Console API ───────────────────────────────────────────────────────────────
+// -- Console API ---------------------------------------------------------------
 
 TaskHandle_t logger_task_get_handle() { return s_logger_handle; }
 
@@ -47,7 +47,7 @@ void logger_task_force_record_off()
     s_recording_stopped = true;
 }
 
-// ── Flight state name helper ──────────────────────────────────────────────────
+// -- Flight state name helper --------------------------------------------------
 static const char* state_name( uint8_t s )
 {
     switch ( static_cast<FlightState>( s ) ) {
@@ -64,7 +64,7 @@ static const char* state_name( uint8_t s )
     }
 }
 
-// ── Read decoded ─────────────────────────────────────────────────────────────
+// -- Read decoded -------------------------------------------------------------
 // Walk XIP flash directly (read-only, no flash_safe_execute needed).
 // Print each 128-byte SigmaStorageFullRecord in human-readable form.
 // Stops at the first fully-erased (0xFF) record.
@@ -147,7 +147,7 @@ void logger_task_read_decoded()
     stdio_flush();
 }
 
-// ── Read CSV ─────────────────────────────────────────────────────────────────
+// -- Read CSV -----------------------------------------------------------------
 // Same flash walk as read_decoded() but prints one CSV row per record so the
 // output can be copy-pasted into a spreadsheet or piped to a file.
 // Calls printf() directly (no 256-byte log_print limit).
@@ -240,7 +240,7 @@ void logger_task_read_csv()
     stdio_flush();
 }
 
-// ── Read raw ─────────────────────────────────────────────────────────────────
+// -- Read raw -----------------------------------------------------------------
 // Logger::read_memory() walks from log_base_addr, printing raw bytes when
 // print_func is nullptr (our case).
 void logger_task_read_raw()
@@ -248,7 +248,7 @@ void logger_task_read_raw()
     s_logger.read_memory();
 }
 
-// ── Erase ────────────────────────────────────────────────────────────────────
+// -- Erase --------------------------------------------------------------------
 // Erase flash and re-initialize the logger so it is ready for a new flight.
 // initialize(false) rescans without calling flash_safe_execute_core_init()
 // again (that was already done by logger_task_init()).
@@ -267,7 +267,7 @@ void logger_task_erase()
     s_force_record_on   = false;
 }
 
-// ── Logger task ───────────────────────────────────────────────────────────────
+// -- Logger task ---------------------------------------------------------------
 static void logger_task( void* )
 {
     log_print( "[logger] flash logger ready\n" );

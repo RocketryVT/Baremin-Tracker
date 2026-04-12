@@ -1,22 +1,35 @@
+# -- RadioLib (local submodule, set by deps.cmake) -----------------------------
+if (NOT EXISTS "${RADIOLIB_PATH}/CMakeLists.txt")
+    message(FATAL_ERROR "RadioLib not found at ${RADIOLIB_PATH}. "
+            "Check RADIOLIB_PATH in deps.cmake or set -DRADIOLIB_PATH=...")
+endif()
+add_subdirectory(${RADIOLIB_PATH} ${CMAKE_CURRENT_BINARY_DIR}/radiolib)
+
 add_executable(bareman_tracker
     main.cpp
+    new_delete.cpp
     Tasks/GPS/gps_task.cpp
     Tasks/LoRa/lora_task.cpp
     Tasks/USB/usb_task.cpp
     Tasks/Baro/ms5607.cpp
     Tasks/Baro/baro_task.cpp
+    Tasks/IMU/imu_task.cpp
+    Tasks/I2C/i2c_task.cpp
     Tasks/Logger/logger_task.cpp
 )
 
 target_include_directories(bareman_tracker PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/../include   # FreeRTOSConfig.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/../include   # FreeRTOSConfig.h, PicoHal.h
     ${CMAKE_CURRENT_SOURCE_DIR}              # shared.hpp, task headers
     ${CMAKE_CURRENT_SOURCE_DIR}/Tasks/Baro  # ms5607.hpp, altitude-pa.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/Tasks/IMU  # imu_task.hpp
     ${LIBS_ROOT}/packets                     # SIGMA.hpp
+    ${RADIOLIB_PATH}/src                     # RadioLib.h
 )
 
 target_compile_definitions(bareman_tracker PRIVATE
     USE_FREERTOS=1
+    PICO_CXX_DISABLE_ALLOCATION_OVERRIDES=1  # we supply our own in new_delete.cpp
 )
 
 target_link_libraries(bareman_tracker
@@ -25,17 +38,13 @@ target_link_libraries(bareman_tracker
     hardware_gpio
     hardware_spi
     hardware_i2c
+    hardware_dma
     FreeRTOS-Kernel
     FreeRTOS-Kernel-Heap4
-    lr11xx                                   # Semtech LR11XX driver + Pico SPI HAL
+    RadioLib                                 # SX1276 driver
     gps                                      # NMEA parser (gps::GPSParser)
     pico_logger                              # flash ring-buffer logger
-)
-
-# lr11xx_hal.c uses FreeRTOS — give it our FreeRTOSConfig.h so it compiles.
-# (FreeRTOS-Kernel itself does not bundle FreeRTOSConfig.h; it is project-specific.)
-target_include_directories(lr11xx PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/../include
+    icm40609d                                # TDK ICM-40609-D IMU driver
 )
 
 pico_enable_stdio_usb(bareman_tracker 1)

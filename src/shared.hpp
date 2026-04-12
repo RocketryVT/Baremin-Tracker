@@ -85,16 +85,20 @@ extern volatile bool g_nmea_raw_enabled;
 // Set by USB console ("hex on/off"). Dumps every raw UART byte as hex.
 extern volatile bool g_ubx_hex_enabled;
 
+// -- i2c0 bus serialisation ----------------------------------------------------
+// MS5607 barometer and ICM-40609-D IMU share i2c0.
+// All i2c0 transfers are routed through the i2c task queue (Tasks/I2C/i2c_task).
+// Do NOT call i2c_write_blocking / i2c_read_blocking directly on i2c0.
+
 // -- Pin assignments -----------------------------------------------------------
 namespace Pins {
-    // LR1121 — SPI0
-    static constexpr uint LR_SCK     = 6;
-    static constexpr uint LR_MOSI    = 7;
-    static constexpr uint LR_MISO    = 4;
-    static constexpr uint LR_NSS     = 5;
-    static constexpr uint LR_BUSY    = 1;
-    static constexpr uint LR_NRESET  = 0;
-    static constexpr uint LR_DIO1    = 2;  // interrupt
+    // SX1276 — SPI1
+    static constexpr uint LR_SCK     = 26;
+    static constexpr uint LR_MOSI    = 27;
+    static constexpr uint LR_MISO    = 28;
+    static constexpr uint LR_NSS     = 29;
+    static constexpr uint LR_DIO0    = 22;  // TxDone / RxDone interrupt
+    static constexpr uint LR_NRESET  = 23;
 
     // MS5607 barometer — I2C0
     static constexpr uint BARO_SDA   = 20;
@@ -112,14 +116,42 @@ namespace Pins {
     static constexpr uint GPS_UART_RX = 17;   // GPS TX  RP2350 RX (NMEA input)
 }
 
+// -- IMU data ------------------------------------------------------------------
+// Written by imu_task; read by any task needing inertial data.
+// Units: accel in m/s², gyro in °/s, temp in °C.
+struct ImuData {
+    float accel_x_mss;
+    float accel_y_mss;
+    float accel_z_mss;
+    float gyro_x_dps;
+    float gyro_y_dps;
+    float gyro_z_dps;
+    float temp_c;
+};
+
+// Depth-1 overwrite queue — always holds the freshest sample.
+#define IMU_QUEUE_DEPTH  1
+extern QueueHandle_t g_imu_queue;
+
+// -- LoRa TX frame queue -------------------------------------------------------
+// Pre-serialized SIGMA frames queued by the scheduler and drained by the radio.
+// Depth of 16 absorbs a burst of 5 TIME_SYNC frames plus normal 10 Hz traffic.
+struct TxFrame {
+    uint8_t  buf[ SIGMA::MAX_FRAME ];
+    uint16_t len;
+};
+
+#define TX_QUEUE_DEPTH  16
+extern QueueHandle_t g_tx_queue;
+
 // -- LoRa radio parameters (must match ground station receiver) ----------------
 namespace LoRaCfg {
     static constexpr uint32_t FREQ_HZ   = 915'000'000;
     static constexpr uint8_t  SF        = 7;      // Spreading Factor 7
     static constexpr uint8_t  BW        = 125;    // 125 kHz
-    static constexpr uint8_t  CR        = 5;      // 4/5
+    static constexpr uint8_t  CR        = 7;      // 4/5
     static constexpr uint8_t  SYNC_WORD = 0x12;   // Private network (matches SX1276 GS)
-    static constexpr int8_t   TX_DBM    = 22;     // dBm (HPA, VBAT supply)
+    static constexpr int8_t   TX_DBM    = 20;     // dBm (RFM95W PA_BOOST max)
     static constexpr uint16_t PREAMBLE  = 8;      // symbols
 
     // Transmit interval

@@ -51,7 +51,7 @@
 #define PRESSURE_SCALE 100
 #define TEMPERATURE_SCALE 100
 
-#define MS5607_SAMPLE_RATE_HZ 500
+#define MS5607_SAMPLE_RATE_HZ 100
 
 typedef union {
 	struct {

@@ -7,7 +7,7 @@
 // Call once before vTaskStartScheduler().
 void logger_task_init();
 
-// ── Console helpers ───────────────────────────────────────────────────────────
+// -- Console helpers -----------------------------------------------------------
 // Intended for use from the serial console (USB task, core 0).
 
 // Return the logger task handle so the caller can vTaskSuspend/Resume it

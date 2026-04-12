@@ -5,6 +5,7 @@
 //   gps       (pri 3) – UART0 NMEA parse; overwrites g_gps_queue
 //   lora      (pri 4) – reads g_gps_queue + g_baro_queue; transmits SIGMA LoRa frames
 //   baro      (pri 1-3) – MS5607 sample + reader, overwrites g_baro_queue
+//   imu       (pri 2) – ICM-40609-D 100 Hz, overwrites g_imu_queue
 //   log_flash (pri 1) – drains g_logger_queue; commits SigmaStorageFullRecords to flash
 //   usb       (pri 1) – drains g_log_queue; sole caller of printf()
 //
@@ -17,15 +18,19 @@
 #include "Tasks/USB/usb_task.hpp"
 #include "Tasks/Baro/baro_task.hpp"
 #include "Tasks/Logger/logger_task.hpp"
+#include "Tasks/IMU/imu_task.hpp"
+#include "Tasks/I2C/i2c_task.hpp"
 
 #include "pico/stdlib.h"
 #include <stdio.h>
 
 // -- Shared FreeRTOS handles ---------------------------------------------------
-QueueHandle_t g_gps_queue    = nullptr;
-QueueHandle_t g_log_queue    = nullptr;
-QueueHandle_t g_baro_queue   = nullptr;
-QueueHandle_t g_logger_queue = nullptr;
+QueueHandle_t    g_gps_queue    = nullptr;
+QueueHandle_t    g_log_queue    = nullptr;
+QueueHandle_t    g_baro_queue   = nullptr;
+QueueHandle_t    g_logger_queue = nullptr;
+QueueHandle_t    g_tx_queue     = nullptr;
+QueueHandle_t    g_imu_queue    = nullptr;
 
 volatile FlightState g_flight_state = FlightState::GROUND_IDLE;
 
@@ -40,6 +45,12 @@ static uint8_t       s_baro_queue_storage[ BARO_QUEUE_DEPTH * sizeof( BaroData )
 
 static StaticQueue_t s_logger_queue_buf;
 static uint8_t       s_logger_queue_storage[ LOGGER_QUEUE_DEPTH * sizeof( SigmaStorageFullRecord ) ];
+
+static StaticQueue_t s_tx_queue_buf;
+static uint8_t       s_tx_queue_storage[ TX_QUEUE_DEPTH * sizeof( TxFrame ) ];
+
+static StaticQueue_t s_imu_queue_buf;
+static uint8_t       s_imu_queue_storage[ IMU_QUEUE_DEPTH * sizeof( ImuData ) ];
 
 // -- FreeRTOS static-allocation callbacks --------------------------------------
 extern "C" {
@@ -139,13 +150,25 @@ int main( void )
                                           s_logger_queue_storage,
                                           &s_logger_queue_buf );
 
+    g_tx_queue = xQueueCreateStatic( TX_QUEUE_DEPTH,
+                                      sizeof( TxFrame ),
+                                      s_tx_queue_storage,
+                                      &s_tx_queue_buf );
+
+    g_imu_queue = xQueueCreateStatic( IMU_QUEUE_DEPTH,
+                                       sizeof( ImuData ),
+                                       s_imu_queue_storage,
+                                       &s_imu_queue_buf );
+
     TaskHandle_t h = xTaskCreateStatic( heartbeat_task, "hb", 256,
                                             NULL, tskIDLE_PRIORITY + 1,
                                             s_hb_stack, &s_hb_tcb );
     configASSERT( h );
 
     usb_task_init();
-    baro_task_init();
+    i2c_task_init();     // initialises i2c0 hardware + queue (must be first)
+    baro_task_init();    // calls s_baro.initialize() pre-scheduler via direct fallback
+    imu_task_init();
     logger_task_init();
 
     gps_task_init();

@@ -78,7 +78,7 @@ extern "C" {
 /* Memory allocation related definitions. */
 #define configSUPPORT_STATIC_ALLOCATION         1
 #define configSUPPORT_DYNAMIC_ALLOCATION        1
-#define configTOTAL_HEAP_SIZE                   (72*1024)
+#define configTOTAL_HEAP_SIZE                   (100*1024)
 #define configAPPLICATION_ALLOCATED_HEAP        0
 
 /* Hook function related definitions. */
@@ -150,13 +150,14 @@ extern "C" {
 #define INCLUDE_xTaskGetHandle                  1
 #define INCLUDE_xTaskResumeFromISR              1
 
-/* A header file that defines trace macro can be included here. */
-// #define portCONFIGURE_TIMER_FOR_RUN_TIME_STATS() 
-// extern uint64_t time_us_64(void);						// "hardware/timer.h"
-// #define RUN_TIME_STAT_time_us_64Divider 1000			// stat granularity is mS
-// #define portGET_RUN_TIME_COUNTER_VALUE() (time_us_64()/RUN_TIME_STAT_time_us_64Divider)	// runtime counter in mS
-#define portCONFIGURE_TIMER_FOR_RUN_TIME_STATS()  // use FreeRTOS's internal run time stats timer (tick count)
-#define portGET_RUN_TIME_COUNTER_VALUE() ( xTaskGetTickCount() )  // runtime
+/* Run-time stats counter — 1 µs hardware timer divided to ms resolution.
+ * time_us_64() reads the RP2350 64-bit µs timer; dividing by 1000 gives ms
+ * granularity so CPU% is accurate to ~0.1% rather than 1-tick (1 ms) steps.
+ * portCONFIGURE_TIMER_FOR_RUN_TIME_STATS is a no-op: the hardware timer runs
+ * continuously from boot with no setup required. */
+extern uint64_t time_us_64( void );
+#define portCONFIGURE_TIMER_FOR_RUN_TIME_STATS()
+#define portGET_RUN_TIME_COUNTER_VALUE()  ( ( uint32_t )( time_us_64() / 1000ULL ) )
 
 #ifdef __cplusplus
 }
