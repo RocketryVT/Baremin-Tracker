@@ -14,15 +14,16 @@ static SX1276  s_radio = new Module( &s_hal, Pins::LR_NSS, Pins::LR_DIO0,
 // -- Radio init ----------------------------------------------------------------
 static bool radio_init()
 {
-    int state = s_radio.begin(
-        static_cast<float>( LoRaCfg::FREQ_HZ ) / 1e6f,
-        static_cast<float>( LoRaCfg::BW ),
-        LoRaCfg::SF,
-        LoRaCfg::CR,
-        LoRaCfg::SYNC_WORD,
-        LoRaCfg::TX_DBM,
-        LoRaCfg::PREAMBLE
-    );
+    ConfigLoRa_t config;
+    config.frequency       = static_cast<float>( LoRaCfg::FREQ_HZ ) / 1e6f;
+    config.bandwidth       = static_cast<float>( LoRaCfg::BW );
+    config.spreadingFactor = LoRaCfg::SF;
+    config.codingRate      = LoRaCfg::CR;
+    config.syncWord        = LoRaCfg::SYNC_WORD;
+    config.power           = LoRaCfg::TX_DBM;
+    config.preambleLength  = LoRaCfg::PREAMBLE;
+
+    int state = s_radio.begin( config );
 
     if ( state != RADIOLIB_ERR_NONE ) {
         log_print( "[lora] SX1276 init failed, code: %d\n", state );

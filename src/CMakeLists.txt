@@ -11,7 +11,6 @@ add_executable(bareman_tracker
     Tasks/GPS/gps_task.cpp
     Tasks/LoRa/lora_task.cpp
     Tasks/USB/usb_task.cpp
-    Tasks/Baro/ms5607.cpp
     Tasks/Baro/baro_task.cpp
     Tasks/IMU/imu_task.cpp
     Tasks/I2C/i2c_task.cpp
@@ -21,7 +20,6 @@ add_executable(bareman_tracker
 target_include_directories(bareman_tracker PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../include   # FreeRTOSConfig.h, PicoHal.h
     ${CMAKE_CURRENT_SOURCE_DIR}              # shared.hpp, task headers
-    ${CMAKE_CURRENT_SOURCE_DIR}/Tasks/Baro  # ms5607.hpp, altitude-pa.h
     ${CMAKE_CURRENT_SOURCE_DIR}/Tasks/IMU  # imu_task.hpp
     ${LIBS_ROOT}/packets                     # SIGMA.hpp
     ${RADIOLIB_PATH}/src                     # RadioLib.h
@@ -45,6 +43,7 @@ target_link_libraries(bareman_tracker
     gps                                      # NMEA parser (gps::GPSParser)
     pico_logger                              # flash ring-buffer logger
     icm40609d                                # TDK ICM-40609-D IMU driver
+    ms5607                                   # TE MS5607 barometer driver
 )
 
 pico_enable_stdio_usb(bareman_tracker 1)

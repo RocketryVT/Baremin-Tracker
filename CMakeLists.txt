@@ -6,9 +6,6 @@ set(PICO_BOARD pico2)
 # Bareman custom PCB has a 16 MB flash chip (vs 4 MB on stock Pico 2).
 # Must be set before pico_sdk_init() so the SDK linker script sizes the flash
 # region correctly and PICO_FLASH_SIZE_BYTES resolves to 16 MB everywhere.
-# Bareman custom PCB has a 16 MB flash chip (vs 4 MB on stock Pico 2).
-# Must be set before pico_sdk_init() so the SDK linker script sizes the flash
-# region correctly and PICO_FLASH_SIZE_BYTES resolves to 16 MB everywhere.
 set(PICO_FLASH_SIZE_BYTES 16777216)
 
 # Locate the avionics root (2 levels up from this file)
@@ -62,6 +59,16 @@ if (NOT EXISTS "${ICM40609D_ROOT}/CMakeLists.txt")
             "Check ICM40609D_ROOT in deps.cmake.")
 endif()
 add_subdirectory(${ICM40609D_ROOT} ${CMAKE_CURRENT_BINARY_DIR}/icm40609d)
+
+# MS5607 barometer driver.
+if (NOT EXISTS "${MS5607_ROOT}/CMakeLists.txt")
+    message(FATAL_ERROR "MS5607 driver not found at ${MS5607_ROOT}. Set MS5607_ROOT.")
+endif()
+add_subdirectory(${MS5607_ROOT} ${CMAKE_CURRENT_BINARY_DIR}/ms5607)
+# Compile ms5607 with FreeRTOS support; FreeRTOSConfig.h lives in this project's include/.
+target_compile_definitions(ms5607 PRIVATE USE_FREERTOS=1)
+target_include_directories(ms5607 PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
+target_link_libraries(ms5607 PUBLIC FreeRTOS-Kernel)
 
 add_subdirectory(src)
 

@@ -1,12 +1,35 @@
 #include "baro_task.hpp"
 #include "shared.hpp"
-#include "ms5607.hpp"
+#include "ms5607/MS5607.hpp"
+#include "Tasks/I2C/i2c_task.hpp"
 
 #include "hardware/i2c.h"
 #include "hardware/gpio.h"
 #include "pico/time.h"
 #include <cstdlib>
 #include <string.h>
+
+// ---------------------------------------------------------------------------
+// MS5607 transport bridge — maps ms5607::Transport onto the I2C task queue.
+// ---------------------------------------------------------------------------
+
+static constexpr uint8_t MS5607_ADDR = 0x77;
+
+static bool baro_xfer_cmd( void*, uint8_t cmd_byte )
+{
+    I2cRequest req;
+    i2c_req_write( &req, MS5607_ADDR, &cmd_byte, 1 );
+    return i2c_req_submit_wait( &req );
+}
+
+static bool baro_xfer_cmd_read( void*, uint8_t cmd_byte, uint8_t* buf, size_t len )
+{
+    I2cRequest req;
+    i2c_req_write_read( &req, MS5607_ADDR, &cmd_byte, 1, buf, static_cast<uint8_t>( len ) );
+    return i2c_req_submit_wait( &req );
+}
+
+static const ms5607::Transport k_baro_transport = { nullptr, baro_xfer_cmd, baro_xfer_cmd_read };
 
 // -- Flight detection thresholds -----------------------------------------------
 static constexpr float LAUNCH_AGL_M        = 20.0f;  // m AGL to declare launch
@@ -16,7 +39,7 @@ static constexpr int   LANDED_STABLE_COUNT = 500;    // ~10 s at 50 Hz
 static constexpr int   CALIB_SAMPLES       = 50;     // 5 s at 10 Hz
 
 // -- MS5607 instance -----------------------------------------------------------
-static MS5607 s_baro( i2c0 );
+static ms5607::MS5607 s_baro;
 
 // -- Task storage --------------------------------------------------------------
 static StaticTask_t s_sample_handler_tcb;
@@ -153,19 +176,19 @@ void baro_task_init()
     // i2c0 hardware is initialised by i2c_task_init() — do NOT re-init here.
 
     // Read PROM calibration coefficients (blocks ~700 ms in initialize()).
-    s_baro.initialize();
+    s_baro.initialize(k_baro_transport);
 
     // Sample-handler task: woken by ISR alarm callback to run each conversion
     // step in task context (safe for i2c_read_blocking / i2c_write_blocking).
     s_baro.sample_handler_task_handle = xTaskCreateStatic(
-        MS5607::ms5607_sample_handler, "baro_irq", 512,
+        ms5607::MS5607::ms5607_sample_handler, "baro_irq", 512,
         &s_baro, tskIDLE_PRIORITY + 3,
         s_sample_handler_stack, &s_sample_handler_tcb );
     configASSERT( s_baro.sample_handler_task_handle );
 
     // Update task: triggers a new sample at MS5607_SAMPLE_RATE_HZ.
     s_baro.update_task_handle = xTaskCreateStatic(
-        MS5607::update_ms5607_task, "baro_upd", 512,
+        ms5607::MS5607::update_ms5607_task, "baro_upd", 512,
         &s_baro, tskIDLE_PRIORITY + 2,
         s_update_stack, &s_update_tcb );
     configASSERT( s_baro.update_task_handle );
