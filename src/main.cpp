@@ -3,9 +3,10 @@
 //
 // Task layout:
 //   gps       (pri 3) – UART0 NMEA parse; overwrites g_gps_queue
-//   lora      (pri 4) – reads g_gps_queue + g_baro_queue; transmits SIGMA LoRa frames
+//   fusion    (pri 2) – baro/GPS nav snapshot; overwrites g_fusion_queue
+//   lora      (pri 4) – mesh/radio owner; transmits SIGMA2 frames
 //   baro      (pri 1-3) – MS5607 sample + reader, overwrites g_baro_queue
-//   imu       (pri 2) – ICM-40609-D 100 Hz, overwrites g_imu_queue
+//   imu       (pri 2) – optional ICM-40609-D 100 Hz, overwrites g_imu_queue
 //   log_flash (pri 1) – drains g_logger_queue; commits SigmaStorageFullRecords to flash
 //   usb       (pri 1) – drains g_log_queue; sole caller of printf()
 //
@@ -20,6 +21,7 @@
 #include "Tasks/Logger/logger_task.hpp"
 #include "Tasks/IMU/imu_task.hpp"
 #include "Tasks/I2C/i2c_task.hpp"
+#include "Tasks/Fusion/fusion_task.hpp"
 
 #include "pico/stdlib.h"
 #include <stdio.h>
@@ -28,8 +30,8 @@
 QueueHandle_t    g_gps_queue    = nullptr;
 QueueHandle_t    g_log_queue    = nullptr;
 QueueHandle_t    g_baro_queue   = nullptr;
+QueueHandle_t    g_fusion_queue = nullptr;
 QueueHandle_t    g_logger_queue = nullptr;
-QueueHandle_t    g_tx_queue     = nullptr;
 QueueHandle_t    g_imu_queue    = nullptr;
 
 volatile FlightState g_flight_state = FlightState::GROUND_IDLE;
@@ -43,11 +45,11 @@ static uint8_t       s_log_queue_storage[ LOG_QUEUE_DEPTH * sizeof( LogMessage )
 static StaticQueue_t s_baro_queue_buf;
 static uint8_t       s_baro_queue_storage[ BARO_QUEUE_DEPTH * sizeof( BaroData ) ];
 
+static StaticQueue_t s_fusion_queue_buf;
+static uint8_t       s_fusion_queue_storage[ FUSION_QUEUE_DEPTH * sizeof( SIGMA2::NavSnapshot ) ];
+
 static StaticQueue_t s_logger_queue_buf;
 static uint8_t       s_logger_queue_storage[ LOGGER_QUEUE_DEPTH * sizeof( SigmaStorageFullRecord ) ];
-
-static StaticQueue_t s_tx_queue_buf;
-static uint8_t       s_tx_queue_storage[ TX_QUEUE_DEPTH * sizeof( TxFrame ) ];
 
 static StaticQueue_t s_imu_queue_buf;
 static uint8_t       s_imu_queue_storage[ IMU_QUEUE_DEPTH * sizeof( ImuData ) ];
@@ -145,15 +147,15 @@ int main( void )
                                         s_baro_queue_storage,
                                         &s_baro_queue_buf );
 
+    g_fusion_queue = xQueueCreateStatic( FUSION_QUEUE_DEPTH,
+                                          sizeof( SIGMA2::NavSnapshot ),
+                                          s_fusion_queue_storage,
+                                          &s_fusion_queue_buf );
+
     g_logger_queue = xQueueCreateStatic( LOGGER_QUEUE_DEPTH,
                                           sizeof( SigmaStorageFullRecord ),
                                           s_logger_queue_storage,
                                           &s_logger_queue_buf );
-
-    g_tx_queue = xQueueCreateStatic( TX_QUEUE_DEPTH,
-                                      sizeof( TxFrame ),
-                                      s_tx_queue_storage,
-                                      &s_tx_queue_buf );
 
     g_imu_queue = xQueueCreateStatic( IMU_QUEUE_DEPTH,
                                        sizeof( ImuData ),
@@ -168,7 +170,12 @@ int main( void )
     usb_task_init();
     i2c_task_init();     // initialises i2c0 hardware + queue (must be first)
     baro_task_init();    // calls s_baro.initialize() pre-scheduler via direct fallback
+#if HAS_IMU
     imu_task_init();
+#else
+    log_print( "[imu] disabled by board profile; running baro-only fusion\n" );
+#endif
+    fusion_task_init();
     logger_task_init();
 
     gps_task_init();

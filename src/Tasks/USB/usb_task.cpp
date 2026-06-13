@@ -301,9 +301,9 @@ static void cmd_status()
     printf( "baro_q       : %u / %u\n",
             ( unsigned ) uxQueueMessagesWaiting( g_baro_queue ),
             ( unsigned ) BARO_QUEUE_DEPTH );
-    printf( "tx_q         : %u / %u\n",
-            ( unsigned ) uxQueueMessagesWaiting( g_tx_queue ),
-            ( unsigned ) TX_QUEUE_DEPTH );
+    printf( "fusion_q     : %u / %u\n",
+            ( unsigned ) uxQueueMessagesWaiting( g_fusion_queue ),
+            ( unsigned ) FUSION_QUEUE_DEPTH );
     printf( "logger_q     : %u / %u\n",
             ( unsigned ) uxQueueMessagesWaiting( g_logger_queue ),
             ( unsigned ) LOGGER_QUEUE_DEPTH );

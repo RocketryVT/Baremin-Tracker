@@ -9,8 +9,8 @@
 // ICM-40609-D shares i2c0 with the MS5607 barometer.
 // i2c0 is already initialised by baro_task_init() — do NOT re-init here.
 // ---------------------------------------------------------------------------
-static constexpr uint IMU_SDA_PIN = 20u;   // GPIO 20 = PIN 32 (same as BARO_SDA)
-static constexpr uint IMU_SCL_PIN = 21u;   // GPIO 21 = PIN 33 (same as BARO_SCL)
+static constexpr uint IMU_SDA_PIN = Pins::BARO_SDA;
+static constexpr uint IMU_SCL_PIN = Pins::BARO_SCL;
 static constexpr uint8_t IMU_ADDR = 0x68u;
 
 // ---------------------------------------------------------------------------

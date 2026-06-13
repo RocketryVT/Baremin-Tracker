@@ -12,16 +12,20 @@ add_executable(bareman_tracker
     Tasks/LoRa/lora_task.cpp
     Tasks/USB/usb_task.cpp
     Tasks/Baro/baro_task.cpp
+    Tasks/Fusion/fusion_task.cpp
     Tasks/IMU/imu_task.cpp
     Tasks/I2C/i2c_task.cpp
     Tasks/Logger/logger_task.cpp
 )
 
 target_include_directories(bareman_tracker PRIVATE
+    ${AVIONICS_ROOT}                         # boards/board.hpp + board pin maps
     ${CMAKE_CURRENT_SOURCE_DIR}/../include   # FreeRTOSConfig.h, PicoHal.h
     ${CMAKE_CURRENT_SOURCE_DIR}              # shared.hpp, task headers
     ${CMAKE_CURRENT_SOURCE_DIR}/Tasks/IMU  # imu_task.hpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/Tasks/Fusion
     ${LIBS_ROOT}/packets                     # SIGMA.hpp
+    ${LIBS_ROOT}/mesh                        # mesh.hpp
     ${RADIOLIB_PATH}/src                     # RadioLib.h
 )
 
@@ -40,7 +44,8 @@ target_link_libraries(bareman_tracker
     FreeRTOS-Kernel
     FreeRTOS-Kernel-Heap4
     RadioLib                                 # SX1276 driver
-    gps                                      # NMEA parser (gps::GPSParser)
+    mesh                                     # packet scheduler / radio owner
+    gps                                      # GPS driver
     pico_logger                              # flash ring-buffer logger
     icm40609d                                # TDK ICM-40609-D IMU driver
     ms5607                                   # TE MS5607 barometer driver

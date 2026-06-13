@@ -1,228 +1,222 @@
 #include "lora_task.hpp"
 #include "shared.hpp"
 
+#include "mesh.hpp"
+
 #include <RadioLib.h>
 #include "PicoHal.h"
 #include "pico/time.h"
-#include <string.h>
 
-// -- SX1276 radio -------------------------------------------------------------
-static PicoHal s_hal( spi1, Pins::LR_SCK, Pins::LR_MOSI, Pins::LR_MISO );
-static SX1276  s_radio = new Module( &s_hal, Pins::LR_NSS, Pins::LR_DIO0,
-                                     Pins::LR_NRESET, RADIOLIB_NC );
+static_assert(HAS_RADIO, "bareman_tracker requires radio support");
+static_assert(HAS_SX1276, "bareman_tracker requires an SX1276 radio");
+static_assert(Board::RadioCount > 0, "bareman_tracker requires Board::Radios[0]");
+static_assert(Board::Radios[0].model == Board::RadioModel::SX1276,
+              "bareman_tracker currently supports SX1276 as Board::Radios[0]");
+static_assert(Board::Radios[0].bus == Board::Bus::SPI1,
+              "bareman_tracker SX1276 is expected on SPI1");
+static_assert(Board::Radios[0].freq_mhz >= Board::spec_of(Board::Radios[0].model).freq_min_mhz &&
+              Board::Radios[0].freq_mhz <= Board::spec_of(Board::Radios[0].model).freq_max_mhz,
+              "SX1276 operating frequency outside device spec");
 
-// -- Radio init ----------------------------------------------------------------
-static bool radio_init()
-{
-    ConfigLoRa_t config;
-    config.frequency       = static_cast<float>( LoRaCfg::FREQ_HZ ) / 1e6f;
-    config.bandwidth       = static_cast<float>( LoRaCfg::BW );
-    config.spreadingFactor = LoRaCfg::SF;
-    config.codingRate      = LoRaCfg::CR;
-    config.syncWord        = LoRaCfg::SYNC_WORD;
-    config.power           = LoRaCfg::TX_DBM;
-    config.preambleLength  = LoRaCfg::PREAMBLE;
+static constexpr Board::RadioInstance RADIO = Board::Radios[0];
 
-    int state = s_radio.begin( config );
+class RadioLibSx1276 final : public SIGMA2::Radio {
+public:
+    RadioLibSx1276()
+        : hal_(spi1, Pins::LR_SCK, Pins::LR_MOSI, Pins::LR_MISO)
+        , module_(&hal_, Pins::LR_NSS, Pins::LR_DIO0, Pins::LR_NRESET, RADIOLIB_NC)
+        , radio_(&module_)
+    {}
 
-    if ( state != RADIOLIB_ERR_NONE ) {
-        log_print( "[lora] SX1276 init failed, code: %d\n", state );
-        return false;
+    const char* name() const override { return "SX1276"; }
+
+    int begin(const SIGMA2::RadioConfig& cfg) override
+    {
+        ConfigLoRa_t config;
+        config.frequency = cfg.freq_mhz;
+        config.bandwidth = cfg.bandwidth_khz;
+        config.spreadingFactor = cfg.spreading_factor;
+        config.codingRate = cfg.coding_rate;
+        config.syncWord = cfg.sync_word;
+        config.power = cfg.tx_dbm;
+        config.preambleLength = cfg.preamble_len;
+
+        return radio_.begin(config);
     }
 
-    log_print( "[lora] SX1276 ready — %.3f MHz  SF%u  BW%u kHz  CR4/%u  %d dBm\n",
-               static_cast<float>( LoRaCfg::FREQ_HZ ) / 1e6f,
-               LoRaCfg::SF, LoRaCfg::BW, LoRaCfg::CR, LoRaCfg::TX_DBM );
-    return true;
-}
-
-// -- Helpers -------------------------------------------------------------------
-
-// Push a serialized frame onto the TX queue. Non-blocking — drops if full.
-static void enqueue( const uint8_t* buf, size_t len )
-{
-    if ( len == 0 || len > sizeof( TxFrame::buf ) ) return;
-    TxFrame f;
-    memcpy( f.buf, buf, len );
-    f.len = static_cast<uint16_t>( len );
-    if ( xQueueSend( g_tx_queue, &f, 0 ) != pdTRUE )
-        log_print( "[lora] tx queue full — frame dropped\n" );
-}
-
-// Days since Unix epoch (1970-01-01) for a given date, using the Gregorian
-// calendar formula.  Valid for any date from 1970 onward.
-static uint32_t days_since_epoch( uint16_t year, uint8_t month, uint8_t day )
-{
-    // Shift so March = month 0, making leap-day the last day of the "year".
-    uint32_t m = month;
-    uint32_t y = year;
-    if ( m <= 2 ) { m += 10; y -= 1; } else { m -= 3; }
-    uint32_t c  = y / 100;
-    uint32_t yr = y % 100;
-    // Days from epoch to start of this day (Gregorian proleptic formula).
-    return ( 146097u * c ) / 4u
-         + ( 1461u   * yr ) / 4u
-         + ( 153u * m + 2u ) / 5u
-         + day
-         - 719469u;   // offset so 1970-01-01 = 0
-}
-
-// Build and enqueue a UTC time-sync frame.
-static void enqueue_time_sync( const GpsData& gps )
-{
-    SIGMA::TimeSyncData ts;
-    ts.boot_us    = static_cast<uint32_t>( time_us_64() );
-    ts.gps_tow_ms = gps.utc_ms;  // ms since midnight UTC (no full TOW available)
-
-    // Reconstruct Unix epoch ms from GPS date + time-of-day.
-    uint64_t utc_unix_ms = 0;
-    if ( gps.utc_year >= 2020 ) {
-        const uint32_t days = days_since_epoch( gps.utc_year, gps.utc_month, gps.utc_day );
-        utc_unix_ms = static_cast<uint64_t>( days ) * 86400000ULL
-                    + static_cast<uint64_t>( gps.utc_ms );
+    int transmit(const uint8_t* data, std::size_t len) override
+    {
+        return radio_.transmit(const_cast<uint8_t*>(data), len);
     }
-    ts.utc_unix_ms = utc_unix_ms;
-    ts.flags       = SIGMA::FLAG_GPS_VALID | SIGMA::FLAG_TIME_VALID;
 
-    uint8_t frame[ SIGMA::MAX_FRAME ];
-    size_t  n = ts.serialize( frame, sizeof( frame ) );
-    enqueue( frame, n );
+private:
+    PicoHal hal_;
+    Module module_;
+    SX1276 radio_;
+};
+
+static SIGMA2::MeshConfig mesh_config()
+{
+    SIGMA2::MeshConfig cfg;
+    cfg.device_type = SIGMA2::DeviceType::Bareman;
+    cfg.node_id = SIGMA2::NodeID::NOSE_CONE;
+    cfg.default_destination = SIGMA2::NodeID::ANTENNA_TRACKER;
+    cfg.radio.freq_mhz = RADIO.freq_mhz;
+    cfg.radio.bandwidth_khz = static_cast<float>(Board::Lora915::BW_KHZ);
+    cfg.radio.spreading_factor = Board::Lora915::SF;
+    cfg.radio.coding_rate = Board::Lora915::CR;
+    cfg.radio.sync_word = Board::Lora915::SYNC_WORD;
+    cfg.radio.tx_dbm = Board::Lora915::TX_DBM;
+    cfg.radio.preamble_len = Board::Lora915::PREAMBLE;
+    return cfg;
 }
 
-// Build and enqueue a GPS_NAV frame.
-static void enqueue_gps_nav( const GpsData& gps )
-{
-    SIGMA::GpsNavData gn;
-    gn.lat          = gps.lat;
-    gn.lon          = gps.lon;
-    gn.alt_gps_m    = static_cast<float>( gps.alt_m );
-    gn.vel_ned_ms[0]= static_cast<float>( gps.vel_north_mms ) * 0.001f;
-    gn.vel_ned_ms[1]= static_cast<float>( gps.vel_east_mms  ) * 0.001f;
-    gn.vel_ned_ms[2]= static_cast<float>( gps.vel_down_mms  ) * 0.001f;
-    gn.satellites   = gps.satellites;
-    gn.flags        = SIGMA::FLAG_GPS_VALID;
+static RadioLibSx1276 s_radio;
+static mesh::Mesh s_mesh(mesh_config());
 
-    uint8_t frame[ SIGMA::MAX_FRAME ];
-    size_t  n = gn.serialize( frame, sizeof( frame ) );
-    enqueue( frame, n );
+static SIGMA2::MeshSnapshot build_snapshot()
+{
+    SIGMA2::MeshSnapshot snap;
+    snap.boot_ms = to_ms_since_boot(get_absolute_time());
+
+    GpsData gps = {};
+    if (xQueuePeek(g_gps_queue, &gps, 0) == pdTRUE) {
+        snap.have_gps = true;
+        snap.gps.lat = gps.lat;
+        snap.gps.lon = gps.lon;
+        snap.gps.alt_m = gps.alt_m;
+        snap.gps.satellites = gps.satellites;
+        snap.gps.vel_ned_ms[0] = static_cast<float>(gps.vel_north_mms) * 0.001f;
+        snap.gps.vel_ned_ms[1] = static_cast<float>(gps.vel_east_mms) * 0.001f;
+        snap.gps.vel_ned_ms[2] = static_cast<float>(gps.vel_down_mms) * 0.001f;
+        snap.gps.utc_ms = gps.utc_ms;
+        snap.gps.utc_year = gps.utc_year;
+        snap.gps.utc_month = gps.utc_month;
+        snap.gps.utc_day = gps.utc_day;
+        snap.gps.fix_type = gps.fix_type;
+        snap.gps.flags = SIGMA2::DATA_VALID_FLAG::GPS_VALID;
+    }
+
+    SIGMA2::NavSnapshot fusion = {};
+    if (xQueuePeek(g_fusion_queue, &fusion, 0) == pdTRUE) {
+        snap.have_nav = true;
+        snap.nav = fusion;
+        if (snap.have_gps) {
+            snap.nav.lat = snap.gps.lat;
+            snap.nav.lon = snap.gps.lon;
+            snap.nav.nav_source |= SIGMA2::TRANSMIT_PACKETS::NavSource::GPS_POS |
+                                   SIGMA2::TRANSMIT_PACKETS::NavSource::GPS_VEL;
+            snap.nav.flags |= SIGMA2::DATA_VALID_FLAG::GPS_VALID;
+        }
+    }
+
+    return snap;
 }
 
-// Build and enqueue a NAV_STATE frame.
-// No IMU/fusion on this board: identity quaternion, baro-only altitude,
-// no fused velocity.
-static void enqueue_nav_state( const BaroData& baro )
+// -- Scheduler task ------------------------------------------------------------
+// Mesh owns packet construction and transition/rate policy. This task just
+// gives it the freshest application state at the current 1 Hz policy rate.
+static void lora_sched_task(void*)
 {
-    const float alt_m = static_cast<float>( baro.altitude_dm ) * 0.1f;
+    vTaskDelay(pdMS_TO_TICKS(12000));
 
-    SIGMA::NavStateData ns;
-    ns.alt_baro_m  = alt_m;
-    ns.alt_fused_m = alt_m;   // no fusion — mirror baro
-    // vel_ned_ms stays zero, q stays identity {1,0,0,0}
-    ns.state = g_flight_state;
-    ns.flags = SIGMA::FLAG_BARO_VALID;
+    log_print("[mesh] scheduler running: NavState@1Hz GpsNav@1Hz TimeSync@0.2Hzx5\n");
 
-    uint8_t frame[ SIGMA::MAX_FRAME ];
-    size_t  n = ns.serialize( frame, sizeof( frame ) );
-    enqueue( frame, n );
-}
+    TickType_t wake = xTaskGetTickCount();
+    uint32_t last_dropped = 0;
 
-// -- Scheduler task (core 0, pri 3) -------------------------------------------
-// Runs at exactly 1 Hz using vTaskDelayUntil.
-// Tracks coarser rates with tick counters:
-//   Every tick  (1 s)  — NavState + GpsNav
-//   Every 5     (5 s)  — burst of 5 TimeSync frames
-static void lora_sched_task( void* )
-{
-    // Wait for the radio task to finish initializing.
-    vTaskDelay( pdMS_TO_TICKS( 12000 ) );
+    for (;;) {
+        vTaskDelayUntil(&wake, pdMS_TO_TICKS(1000));
 
-    log_print( "[lora] scheduler running: NavState@1Hz  GpsNav@1Hz  TimeSync@0.2Hz×5\n" );
+        s_mesh.tick_1hz(build_snapshot());
 
-    TickType_t wake       = xTaskGetTickCount();
-    uint32_t   tick_count = 0;
-
-    for ( ;; ) {
-        vTaskDelayUntil( &wake, pdMS_TO_TICKS( 1000 ) );
-        tick_count++;
-
-        GpsData  gps  = {};
-        BaroData baro = {};
-        const bool have_gps  = ( xQueuePeek( g_gps_queue,  &gps,  0 ) == pdTRUE );
-        const bool have_baro = ( xQueuePeek( g_baro_queue, &baro, 0 ) == pdTRUE );
-
-        // 1 Hz — NavState (baro only)
-        if ( have_baro )
-            enqueue_nav_state( baro );
-
-        // 1 Hz — GpsNav
-        if ( have_gps )
-            enqueue_gps_nav( gps );
-
-        // 0.2 Hz — burst of 5 TimeSync frames every 5 seconds
-        if ( tick_count % 5 == 0 && have_gps ) {
-            for ( int i = 0; i < 5; ++i )
-                enqueue_time_sync( gps );
+        const SIGMA2::MeshTxStats& stats = s_mesh.stats();
+        if (stats.dropped != last_dropped) {
+            last_dropped = stats.dropped;
+            log_print("[mesh] tx queue dropped=%lu queued=%lu\n",
+                      static_cast<unsigned long>(stats.dropped),
+                      static_cast<unsigned long>(s_mesh.queued()));
         }
     }
 }
 
-// -- Radio task (core 0, pri 4) ------------------------------------------------
-// Blocks on g_tx_queue and transmits each frame in order.
-static void lora_radio_task( void* )
+// -- Radio task ----------------------------------------------------------------
+// Mesh owns the radio interface; this task clocks queued transmissions.
+static void lora_radio_task(void*)
 {
-    for ( int i = 10; i > 0; --i ) {
-        log_print( "[lora] radio init in %d...\n", i );
-        vTaskDelay( pdMS_TO_TICKS( 1000 ) );
+    for (int i = 10; i > 0; --i) {
+        log_print("[mesh] radio init in %d...\n", i);
+        vTaskDelay(pdMS_TO_TICKS(1000));
     }
 
-    if ( !radio_init() ) {
-        log_print( "[lora] init failed — radio task halting\n" );
-        while ( true ) vTaskDelay( portMAX_DELAY );
+    s_mesh.set_primary_radio(s_radio);
+
+    if (!s_mesh.begin()) {
+        log_print("[mesh] %s init failed - task halting\n", s_radio.name());
+        while (true) vTaskDelay(portMAX_DELAY);
     }
 
-    TxFrame  f;
-    uint32_t tx_ok  = 0;
-    uint32_t tx_err = 0;
+    log_print("[mesh] %s ready - %.3f MHz SF%u BW%.0f kHz CR4/%u %d dBm\n",
+              s_radio.name(),
+              static_cast<double>(RADIO.freq_mhz),
+              Board::Lora915::SF,
+              static_cast<double>(Board::Lora915::BW_KHZ),
+              Board::Lora915::CR,
+              Board::Lora915::TX_DBM);
+    log_print("[mesh] primary path %.3f MHz role=%s\n",
+              static_cast<double>(RADIO.freq_mhz), RADIO.role);
 
-    for ( ;; ) {
-        if ( xQueueReceive( g_tx_queue, &f, portMAX_DELAY ) != pdTRUE )
+    uint32_t last_ok_report = 0;
+    uint32_t last_err_report = 0;
+
+    for (;;) {
+        (void) s_mesh.poll_receive(to_ms_since_boot(get_absolute_time()));
+
+        int radio_state = 0;
+        if (!s_mesh.transmit_one(&radio_state)) {
+            vTaskDelay(pdMS_TO_TICKS(5));
             continue;
+        }
 
-        int state = s_radio.transmit( f.buf, f.len );
-        if ( state != RADIOLIB_ERR_NONE ) {
-            tx_err++;
-            log_print( "[lora] tx failed code=%d  len=%u  ok=%lu err=%lu\n",
-                       state, ( unsigned ) f.len,
-                       ( unsigned long ) tx_ok, ( unsigned long ) tx_err );
-        } else {
-            tx_ok++;
-            if ( tx_ok % 10 == 0 )
-                log_print( "[lora] tx ok=%lu err=%lu\n",
-                           ( unsigned long ) tx_ok, ( unsigned long ) tx_err );
+        const SIGMA2::MeshTxStats& stats = s_mesh.stats();
+        if (radio_state != RADIOLIB_ERR_NONE && stats.err != last_err_report) {
+            last_err_report = stats.err;
+            log_print("[mesh] tx failed code=%d ok=%lu err=%lu drop=%lu\n",
+                      radio_state,
+                      static_cast<unsigned long>(stats.ok),
+                      static_cast<unsigned long>(stats.err),
+                      static_cast<unsigned long>(stats.dropped));
+        } else if (stats.ok != last_ok_report && (stats.ok % 10u) == 0u) {
+            last_ok_report = stats.ok;
+            log_print("[mesh] tx ok=%lu err=%lu queued=%lu drop=%lu\n",
+                      static_cast<unsigned long>(stats.ok),
+                      static_cast<unsigned long>(stats.err),
+                      static_cast<unsigned long>(s_mesh.queued()),
+                      static_cast<unsigned long>(stats.dropped));
         }
     }
 }
 
 // -- Static task storage -------------------------------------------------------
 static StaticTask_t s_sched_tcb;
-static StackType_t  s_sched_stack[ 1024 ];
+static StackType_t  s_sched_stack[1024];
 
 static StaticTask_t s_radio_tcb;
-static StackType_t  s_radio_stack[ 2048 ];
+static StackType_t  s_radio_stack[2048];
 
 void lora_task_init()
 {
     TaskHandle_t h;
 
-    h = xTaskCreateStatic( lora_sched_task, "lora_sched", 1024,
-                           NULL, tskIDLE_PRIORITY + 3,
-                           s_sched_stack, &s_sched_tcb );
-    configASSERT( h );
-    vTaskCoreAffinitySet( h, ( 1u << 0 ) );
+    h = xTaskCreateStatic(lora_sched_task, "mesh_sched", 1024,
+                          nullptr, tskIDLE_PRIORITY + 3,
+                          s_sched_stack, &s_sched_tcb);
+    configASSERT(h);
+    vTaskCoreAffinitySet(h, (1u << 0));
 
-    h = xTaskCreateStatic( lora_radio_task, "lora_radio", 2048,
-                           NULL, tskIDLE_PRIORITY + 4,
-                           s_radio_stack, &s_radio_tcb );
-    configASSERT( h );
-    vTaskCoreAffinitySet( h, ( 1u << 0 ) );
+    h = xTaskCreateStatic(lora_radio_task, "mesh_radio", 2048,
+                          nullptr, tskIDLE_PRIORITY + 4,
+                          s_radio_stack, &s_radio_tcb);
+    configASSERT(h);
+    vTaskCoreAffinitySet(h, (1u << 0));
 }

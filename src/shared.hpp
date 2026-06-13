@@ -4,6 +4,8 @@
 #include "task.h"
 #include "queue.h"
 
+#include "boards/board.hpp"
+#include "mesh.hpp"
 #include "SIGMA.hpp"   // packet / record definitions (include path added via CMakeLists)
 
 // -- Log queue -----------------------------------------------------------------
@@ -65,6 +67,11 @@ struct BaroData {
 #define BARO_QUEUE_DEPTH  1
 extern QueueHandle_t g_baro_queue;
 
+// -- Fused navigation data -----------------------------------------------------
+// Written by fusion_task; read by mesh/lora. Queue items are SIGMA2::NavSnapshot.
+#define FUSION_QUEUE_DEPTH  1
+extern QueueHandle_t g_fusion_queue;
+
 // -- Flash logger queue --------------------------------------------------------
 // baro_reader_task pushes one SigmaStorageFullRecord per sample.
 // logger_task drains the queue and commits records to flash via pico_logger.
@@ -90,32 +97,6 @@ extern volatile bool g_ubx_hex_enabled;
 // All i2c0 transfers are routed through the i2c task queue (Tasks/I2C/i2c_task).
 // Do NOT call i2c_write_blocking / i2c_read_blocking directly on i2c0.
 
-// -- Pin assignments -----------------------------------------------------------
-namespace Pins {
-    // SX1276 — SPI1
-    static constexpr uint LR_SCK     = 26;
-    static constexpr uint LR_MOSI    = 27;
-    static constexpr uint LR_MISO    = 28;
-    static constexpr uint LR_NSS     = 29;
-    static constexpr uint LR_DIO0    = 22;  // TxDone / RxDone interrupt
-    static constexpr uint LR_NRESET  = 23;
-
-    // MS5607 barometer — I2C0
-    static constexpr uint BARO_SDA   = 20;
-    static constexpr uint BARO_SCL   = 21;
-
-    // Status LED
-    static constexpr uint STATUS     = 12;
-
-    // Debug UART — TX/RX
-    static constexpr uint DBG_TX     = 13;
-    static constexpr uint DBG_RX     = 14;
-
-    // GPS — UART0
-    static constexpr uint GPS_UART_TX = 16;   // RP2350 TX  GPS RX
-    static constexpr uint GPS_UART_RX = 17;   // GPS TX  RP2350 RX (NMEA input)
-}
-
 // -- IMU data ------------------------------------------------------------------
 // Written by imu_task; read by any task needing inertial data.
 // Units: accel in m/s², gyro in °/s, temp in °C.
@@ -132,28 +113,3 @@ struct ImuData {
 // Depth-1 overwrite queue — always holds the freshest sample.
 #define IMU_QUEUE_DEPTH  1
 extern QueueHandle_t g_imu_queue;
-
-// -- LoRa TX frame queue -------------------------------------------------------
-// Pre-serialized SIGMA frames queued by the scheduler and drained by the radio.
-// Depth of 16 absorbs a burst of 5 TIME_SYNC frames plus normal 10 Hz traffic.
-struct TxFrame {
-    uint8_t  buf[ SIGMA::MAX_FRAME ];
-    uint16_t len;
-};
-
-#define TX_QUEUE_DEPTH  16
-extern QueueHandle_t g_tx_queue;
-
-// -- LoRa radio parameters (must match ground station receiver) ----------------
-namespace LoRaCfg {
-    static constexpr uint32_t FREQ_HZ   = 915'000'000;
-    static constexpr uint8_t  SF        = 7;      // Spreading Factor 7
-    static constexpr uint8_t  BW        = 125;    // 125 kHz
-    static constexpr uint8_t  CR        = 7;      // 4/5
-    static constexpr uint8_t  SYNC_WORD = 0x12;   // Private network (matches SX1276 GS)
-    static constexpr int8_t   TX_DBM    = 20;     // dBm (RFM95W PA_BOOST max)
-    static constexpr uint16_t PREAMBLE  = 8;      // symbols
-
-    // Transmit interval
-    static constexpr uint32_t TX_PERIOD_MS = 1000;
-}

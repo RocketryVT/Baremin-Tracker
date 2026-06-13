@@ -1,4 +1,5 @@
 #include "i2c_task.hpp"
+#include "shared.hpp"
 
 #include "FreeRTOS.h"
 #include "task.h"
@@ -162,10 +163,10 @@ void i2c_task_init()
     // Own the i2c0 hardware initialisation — must be called before any task
     // that uses the bus (including baro_task_init which calls s_baro.initialize()).
     i2c_init( i2c0, 400'000 );
-    gpio_set_function( 20u, GPIO_FUNC_I2C );  // BARO_SDA / IMU_SDA
-    gpio_set_function( 21u, GPIO_FUNC_I2C );  // BARO_SCL / IMU_SCL
-    gpio_pull_up( 20u );
-    gpio_pull_up( 21u );
+    gpio_set_function( Pins::BARO_SDA, GPIO_FUNC_I2C );
+    gpio_set_function( Pins::BARO_SCL, GPIO_FUNC_I2C );
+    gpio_pull_up( Pins::BARO_SDA );
+    gpio_pull_up( Pins::BARO_SCL );
 
     s_queue = xQueueCreateStatic(I2C_QUEUE_DEPTH,
                                  sizeof(I2cRequest*),

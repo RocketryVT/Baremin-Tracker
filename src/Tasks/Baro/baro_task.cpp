@@ -13,7 +13,15 @@
 // MS5607 transport bridge — maps ms5607::Transport onto the I2C task queue.
 // ---------------------------------------------------------------------------
 
-static constexpr uint8_t MS5607_ADDR = 0x77;
+static_assert(HAS_BARO, "bareman_tracker requires barometer support");
+static_assert(Board::BaroCount > 0, "bareman_tracker requires Board::Baros[0]");
+static_assert(Board::Baros[0].bus == Board::Bus::I2C0,
+              "bareman_tracker baro task currently supports I2C0 only");
+static_assert(Board::Baros[0].odr_hz <= Board::spec_of(Board::Baros[0].model).max_odr_hz,
+              "barometer ODR exceeds selected device spec");
+
+static constexpr Board::BaroInstance BARO = Board::Baros[0];
+static constexpr uint8_t MS5607_ADDR = BARO.addr_or_cs;
 
 static bool baro_xfer_cmd( void*, uint8_t cmd_byte )
 {
@@ -215,4 +223,3 @@ void baro_task_resume()
     if ( s_baro.sample_handler_task_handle ) vTaskResume( s_baro.sample_handler_task_handle );
     if ( s_baro.update_task_handle )        vTaskResume( s_baro.update_task_handle );
 }
-
