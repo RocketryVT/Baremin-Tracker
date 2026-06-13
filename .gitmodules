@@ -1,0 +1,3 @@
+[submodule "hardware"]
+	path = hardware
+	url = git@github.com:RocketryVT/LoRa-Integrated_Tracker_Board.git
