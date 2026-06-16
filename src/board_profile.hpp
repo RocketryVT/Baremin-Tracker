@@ -36,7 +36,7 @@ inline constexpr int BaroCount = static_cast<int>(std::size(Baros));
 namespace Lora915 {
     inline constexpr uint8_t  SF        = 7;
     inline constexpr uint8_t  BW_KHZ    = 125;
-    inline constexpr uint8_t  CR        = 7;      // RadioLib ConfigLoRa_t coding rate value
+    inline constexpr uint8_t  CR        = 5;      // RadioLib ConfigLoRa_t coding rate value
     inline constexpr uint8_t  SYNC_WORD = 0x12;   // private network
     inline constexpr int8_t   TX_DBM    = 20;
     inline constexpr uint16_t PREAMBLE  = 8;

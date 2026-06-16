@@ -1,6 +1,10 @@
 #include "fusion_task.hpp"
 #include "shared.hpp"
 
+#include "vertical_fusion.hpp"
+
+#include "pico/time.h"
+
 // Baro/GPS fusion task. This intentionally does not read the IMU/mag queues
 // while those physical devices are unavailable.
 
@@ -42,16 +46,18 @@ static float mms_to_mps(int32_t value)
 
 static void fusion_task(void*)
 {
-    bool have_prev = false;
-    float prev_alt_m = 0.0f;
-    TickType_t prev_tick = xTaskGetTickCount();
+    avionics::nav::VerticalFusionConfig filter_cfg;
+    filter_cfg.baro_alt_gain = 0.12f;
+    filter_cfg.baro_vel_gain = 0.018f;
+    filter_cfg.gps_alt_gain = 0.035f;
+    filter_cfg.gps_vel_gain = 0.18f;
+    avionics::nav::VerticalFusion filter(filter_cfg);
 
     for (;;) {
         BaroData baro = {};
         if (xQueuePeek(g_baro_queue, &baro, pdMS_TO_TICKS(100)) == pdTRUE) {
-            const TickType_t now_tick = xTaskGetTickCount();
+            const uint32_t now_ms = to_ms_since_boot(get_absolute_time());
             const float alt_m = static_cast<float>(baro.altitude_dm) * 0.1f;
-            float vel_down_mps = 0.0f;
             float vel_north_mps = 0.0f;
             float vel_east_mps = 0.0f;
             uint8_t flags = SIGMA2::DATA_VALID_FLAG::BARO_VALID;
@@ -63,37 +69,34 @@ static void fusion_task(void*)
             if (have_gps_velocity) {
                 vel_north_mps = mms_to_mps(gps.vel_north_mms);
                 vel_east_mps = mms_to_mps(gps.vel_east_mms);
-                vel_down_mps = mms_to_mps(gps.vel_down_mms);
                 flags |= SIGMA2::DATA_VALID_FLAG::GPS_VALID;
             }
 
-            if (have_prev) {
-                const TickType_t dt_ticks = now_tick - prev_tick;
-                const float dt_s = static_cast<float>(dt_ticks) /
-                                   static_cast<float>(configTICK_RATE_HZ);
-                if (dt_s > 0.0f) {
-                    // NED down is positive while descending.
-                    vel_down_mps = -(alt_m - prev_alt_m) / dt_s;
-                }
-            }
-
-            prev_alt_m = alt_m;
-            prev_tick = now_tick;
-            have_prev = true;
+            const float gps_alt_m = have_gps_velocity ? gps.alt_m : alt_m;
+            const float gps_vel_down_mps =
+                have_gps_velocity ? mms_to_mps(gps.vel_down_mms) : 0.0f;
+            filter.update(now_ms,
+                          alt_m,
+                          have_gps_velocity,
+                          gps_alt_m,
+                          gps_vel_down_mps,
+                          false,
+                          0.0f);
 
             SIGMA2::NavSnapshot fusion = {};
             fusion.alt_baro_m = alt_m;
-            fusion.alt_fused_m = alt_m;
+            fusion.alt_fused_m = filter.altitude_m();
             fusion.vel_ned_ms[0] = vel_north_mps;
             fusion.vel_ned_ms[1] = vel_east_mps;
-            fusion.vel_ned_ms[2] = vel_down_mps;
+            fusion.vel_ned_ms[2] = filter.vel_down_mps();
             fusion.q[0] = 1.0f;
             fusion.q[1] = 0.0f;
             fusion.q[2] = 0.0f;
             fusion.q[3] = 0.0f;
             fusion.frame = SIGMA2::CoordinateFrame::NED;
             fusion.nav_source = SIGMA2::TRANSMIT_PACKETS::NavSource::BARO_ALT |
-                                SIGMA2::TRANSMIT_PACKETS::NavSource::BARO_VEL;
+                                SIGMA2::TRANSMIT_PACKETS::NavSource::BARO_VEL |
+                                SIGMA2::TRANSMIT_PACKETS::NavSource::KALMAN_STATE;
             fusion.flags = flags;
             fusion.state = to_sigma2_state(g_flight_state);
             if (have_gps_velocity) {

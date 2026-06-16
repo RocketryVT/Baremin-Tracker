@@ -5,7 +5,10 @@
 
 #include <RadioLib.h>
 #include "PicoHal.h"
+#include "hardware/gpio.h"
 #include "pico/time.h"
+
+#include <cstring>
 
 static_assert(HAS_RADIO, "bareman_tracker requires radio support");
 static_assert(HAS_SX1276, "bareman_tracker requires an SX1276 radio");
@@ -41,12 +44,44 @@ public:
         config.power = cfg.tx_dbm;
         config.preambleLength = cfg.preamble_len;
 
-        return radio_.begin(config);
+        const int err = radio_.begin(config);
+        if (err == RADIOLIB_ERR_NONE) {
+            radio_.startReceive();
+        }
+        return err;
     }
 
     int transmit(const uint8_t* data, std::size_t len) override
     {
-        return radio_.transmit(const_cast<uint8_t*>(data), len);
+        const int err = radio_.transmit(const_cast<uint8_t*>(data), len);
+        radio_.startReceive();
+        return err;
+    }
+
+    bool receive(SIGMA2::RadioRx& rx) override
+    {
+        if (!gpio_get(Pins::LR_DIO0)) {
+            return false;
+        }
+
+        std::memset(&rx, 0, sizeof(rx));
+        const std::size_t len = radio_.getPacketLength();
+        if (len == 0u || len > sizeof(rx.data)) {
+            radio_.startReceive();
+            return false;
+        }
+
+        const int err = radio_.readData(rx.data, len);
+        if (err != RADIOLIB_ERR_NONE) {
+            radio_.startReceive();
+            return false;
+        }
+
+        rx.len = len;
+        rx.rssi_dbm = static_cast<int16_t>(radio_.getRSSI());
+        rx.snr_q4 = static_cast<int8_t>(radio_.getSNR() * 4.0f);
+        radio_.startReceive();
+        return true;
     }
 
 private:

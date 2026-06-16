@@ -25,6 +25,7 @@ target_include_directories(bareman_tracker PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/Tasks/IMU  # imu_task.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Tasks/Fusion
     ${LIBS_ROOT}/packets                     # SIGMA.hpp
+    ${LIBS_ROOT}/nav                         # vertical_fusion.hpp
     ${LIBS_ROOT}/mesh                        # mesh.hpp
     ${RADIOLIB_PATH}/src                     # RadioLib.h
 )
