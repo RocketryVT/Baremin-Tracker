@@ -11,7 +11,12 @@
 // ---------------------------------------------------------------------------
 static constexpr uint IMU_SDA_PIN = Pins::BARO_SDA;
 static constexpr uint IMU_SCL_PIN = Pins::BARO_SCL;
-static constexpr uint8_t IMU_ADDR = 0x68u;
+// AP_AD0 is strapped high (pin 9 -> /VREG_3V3) on the bareman V2 PCB, so the
+// I2C address LSB is 1 -> 0x69 (not the 0x68 power-on default).
+// NOTE: the V2 board does NOT DC-power the IMU — VDD/VDDIO reach the 3V3 rail
+// only through series decoupling caps (no direct connection). The part cannot
+// respond until that is bodged on the hardware. See board_profile.hpp.
+static constexpr uint8_t IMU_ADDR = 0x69u;
 
 // ---------------------------------------------------------------------------
 // Transport shims — adapt the i2c task queue API to the icm40609d::Transport

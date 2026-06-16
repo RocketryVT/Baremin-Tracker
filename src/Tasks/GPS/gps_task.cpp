@@ -82,7 +82,7 @@ static void gps_task( void* param )
     // Step 2: rate and fix mode.
     send( gps::Ubx::valset_rate_meas( GPS_RATE_MS, gps::ValLayer::RAM ) );
     send( gps::Ubx::valset_rate_nav(   1, gps::ValLayer::RAM ) );
-    send( gps::Ubx::valset_fix_mode(   3, gps::ValLayer::RAM ) ); // AUTO
+    send( gps::Ubx::valset_fix_mode(   gps::Ubx::FixMode::Auto, gps::ValLayer::RAM ) ); // AUTO
 
     // Step 3: message enables.
     send( gps::Ubx::valset_nav_pvt_uart1( 1, gps::ValLayer::RAM ) );
