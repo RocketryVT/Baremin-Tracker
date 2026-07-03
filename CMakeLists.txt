@@ -74,6 +74,20 @@ target_compile_definitions(ms5607 PRIVATE USE_FREERTOS=1)
 target_include_directories(ms5607 PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
 target_link_libraries(ms5607 PUBLIC FreeRTOS-Kernel)
 
+# Onboard LR1121 LoRa modem — Semtech LR11xx vendor driver + Pico SPI HAL.
+# Built directly (not via libs/lora) to avoid re-adding RadioLib, which src/
+# already pulls in. The HAL is FreeRTOS-aware; point it at this project's
+# FreeRTOSConfig.h so the Pico SDK RTOS adapter header resolves.
+add_subdirectory(${LIBS_ROOT}/lora/lr11xx_driver ${CMAKE_CURRENT_BINARY_DIR}/lr11xx_driver)
+add_library(lr11xx STATIC ${LIBS_ROOT}/lora/lr11xx_hal.c)
+target_include_directories(lr11xx PUBLIC
+    ${LIBS_ROOT}/lora                  # lr11xx_hal_context.h
+    ${LIBS_ROOT}/lora/lr11xx_driver
+    ${CMAKE_CURRENT_LIST_DIR}/include   # FreeRTOSConfig.h
+)
+target_link_libraries(lr11xx PUBLIC
+    lr11xx_driver pico_stdlib hardware_spi hardware_gpio pico_time FreeRTOS-Kernel)
+
 add_subdirectory(src)
 
 add_compile_options(

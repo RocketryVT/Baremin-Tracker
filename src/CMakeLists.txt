@@ -27,7 +27,9 @@ target_include_directories(bareman_tracker PRIVATE
     ${LIBS_ROOT}/packets                     # SIGMA.hpp
     ${LIBS_ROOT}/nav                         # vertical_fusion.hpp
     ${LIBS_ROOT}/mesh                        # mesh.hpp
-    ${RADIOLIB_PATH}/src                     # RadioLib.h
+    ${RADIOLIB_PATH}/src                     # RadioLib.h (legacy SX1276 path, #if 0)
+    ${LIBS_ROOT}/lora                        # lr11xx_hal_context.h
+    ${LIBS_ROOT}/lora/lr11xx_driver          # LR1121 driver headers
 )
 
 target_compile_definitions(bareman_tracker PRIVATE
@@ -44,7 +46,8 @@ target_link_libraries(bareman_tracker
     hardware_dma
     FreeRTOS-Kernel
     FreeRTOS-Kernel-Heap4
-    RadioLib                                 # SX1276 driver
+    RadioLib                                 # legacy SX1276 path (#if 0)
+    lr11xx                                   # onboard LR1121 LoRa driver + HAL
     mesh                                     # packet scheduler / radio owner
     gps                                      # GPS driver
     pico_logger                              # flash ring-buffer logger
